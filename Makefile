@@ -1,7 +1,6 @@
 .PHONY: test build doctor status policy-control-test
 .PHONY: web-install web-build web-test control-build control-run
-.PHONY: lab-install lab-uninstall-root lab-check lab-up lab-status lab-test
-.PHONY: lab-test-tun lab-test-tun-imported-profile lab-test-tun-imported-egress lab-test-tun-device-policy lab-down lab-destroy
+.PHONY: linux-lab-test linux-lab-test-tun
 .PHONY: real-device-start-off real-device-start-tun real-device-start-tun-proxy
 .PHONY: real-device-stop real-device-status real-device-client-check
 .PHONY: same-lan-start-tun same-lan-start-tun-proxy same-lan-start-tun-imported-egress
@@ -44,41 +43,11 @@ status:
 policy-control-test:
 	./tests/integration/policy-control.sh
 
-lab-install:
-	./tests/lab/install-host-deps.sh
+linux-lab-test:
+	bash tests/linux-lab/lab.sh test
 
-lab-uninstall-root:
-	./tests/lab/install-host-deps.sh --uninstall-root
-
-lab-check:
-	./tests/lab/lab.sh check
-
-lab-up:
-	./tests/lab/lab.sh up
-
-lab-status:
-	./tests/lab/lab.sh status
-
-lab-test:
-	./tests/lab/lab.sh test
-
-lab-test-tun:
-	./tests/lab/lab.sh test-tun
-
-lab-test-tun-imported-profile:
-	OMG_LAB_MIHOMO_PROFILE=tests/lab/mihomo-profile.imported-tun.yaml ./tests/lab/lab.sh test-tun
-
-lab-test-tun-imported-egress:
-	OMG_LAB_MIHOMO_PROFILE=tests/lab/mihomo-profile.imported-tun-egress.yaml ./tests/lab/lab.sh test-tun
-
-lab-test-tun-device-policy:
-	./tests/lab/lab.sh test-tun-device-policy
-
-lab-down:
-	./tests/lab/lab.sh down
-
-lab-destroy:
-	./tests/lab/lab.sh destroy
+linux-lab-test-tun:
+	bash tests/linux-lab/lab.sh test-tun
 
 real-device-start-off:
 	./tests/real-device/smoke.sh start-off

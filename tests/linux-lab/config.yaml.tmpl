@@ -1,0 +1,62 @@
+gateway:
+  mode: "isolated_lan"
+  interface: "__GATEWAY_INTERFACE__"
+  lan_ip: "192.168.50.1"
+  upstream_interface: "__UPSTREAM_INTERFACE__"
+  router_dhcp_disabled_confirmed: false
+
+dhcp:
+  binary: "__DNSMASQ_BINARY__"
+  enabled: true
+  range_start: "192.168.50.100"
+  range_end: "192.168.50.200"
+  lease_time: "30m"
+  domain: "lab"
+
+device_policy:
+  file: ""
+
+dns:
+  listen: "192.168.50.1"
+  port: 53
+  upstream: "__DNS_UPSTREAM__"
+
+management:
+  listen: "__MANAGEMENT_LISTEN__"
+  tls_cert_file: ""
+  tls_key_file: ""
+
+nftables:
+  table: "opensurge"
+
+mihomo:
+  binary: "__MIHOMO_BINARY__"
+  config: "__MIHOMO_CONFIG__"
+  profile_mode: "__MIHOMO_PROFILE_MODE__"
+  profile: "__MIHOMO_PROFILE__"
+  mixed_port: 17890
+  redir_port: 0
+  api_addr: "127.0.0.1:19090"
+  secret: ""
+
+transparent:
+  mode: "__TRANSPARENT_MODE__"
+  tun_device: "opensurge-tun"
+  tun_stack: "mixed"
+  tun_auto_route: true
+  tun_auto_redirect: true
+  tun_auto_detect_interface: false
+  tun_strict_route: false
+
+upstream_proxy:
+  enabled: false
+  name: "linux-lab-proxy"
+  type: "http"
+  server: "198.51.100.2"
+  port: 18080
+  username: ""
+  password: ""
+  match_domain: "example.com"
+
+runtime:
+  dir: "__RUNTIME_DIR__"
