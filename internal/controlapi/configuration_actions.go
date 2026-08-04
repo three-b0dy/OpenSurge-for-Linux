@@ -54,7 +54,7 @@ func (DirectRunner) ApplyProfile(ctx context.Context, configPath, revision strin
 
 func applyProfile(ctx context.Context, configPath, revision string, payload []byte, deps profileApplyDeps) (ProfileApplyResult, error) {
 	if deps.geteuid() != 0 {
-		return ProfileApplyResult{}, fmt.Errorf("privileged helper is required")
+		return ProfileApplyResult{}, fmt.Errorf("privileged gateway service is required")
 	}
 	if len(payload) == 0 || len(payload) > maxSourceSize {
 		return ProfileApplyResult{}, fmt.Errorf("profile payload must be between 1 byte and 10 MiB")
@@ -142,7 +142,7 @@ func profileApplyRollbackError(reloadErr, rollbackErr, restartErr error) error {
 
 func (DirectRunner) ApplyDevicePolicy(_ context.Context, configPath, revision string, payload []byte) (string, error) {
 	if os.Geteuid() != 0 {
-		return "", fmt.Errorf("privileged helper is required")
+		return "", fmt.Errorf("privileged gateway service is required")
 	}
 	if len(payload) == 0 || len(payload) > maxSourceSize {
 		return "", fmt.Errorf("device policy payload must be between 1 byte and 10 MiB")
@@ -203,7 +203,7 @@ func (DirectRunner) ApplyDevicePolicy(_ context.Context, configPath, revision st
 
 func (DirectRunner) ApplyControlConfig(_ context.Context, configPath, revision string, payload []byte) (string, error) {
 	if os.Geteuid() != 0 {
-		return "", fmt.Errorf("privileged helper is required")
+		return "", fmt.Errorf("privileged gateway service is required")
 	}
 	return applyControlConfig(configPath, revision, payload)
 }

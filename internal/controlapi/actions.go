@@ -16,17 +16,26 @@ import (
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 )
 
-type ActionRunner interface {
-	Run(context.Context, string, string) error
-}
+// GatewayAction is the small, fixed set of privileged operations exposed by
+// the Linux gateway socket. Configuration mutations use the same socket but
+// are deliberately separate actions so the daemon can authorize them without
+// accepting arbitrary commands.
+type GatewayAction string
 
-type NetworkRunner interface {
-	SetManual(context.Context, string, linuxnetwork.ManualConfig) error
-	SetDHCP(context.Context, string, string) error
-	ProbeDHCP(context.Context, string, string, time.Duration) ([]string, error)
+const (
+	GatewayStart              GatewayAction = "start"
+	GatewayStop               GatewayAction = "stop"
+	GatewayReload             GatewayAction = "reload"
+	GatewayRestartMihomo      GatewayAction = "restart-mihomo"
+	GatewayApplyProfile       GatewayAction = "config-apply-profile"
+	GatewayApplyDevicePolicy  GatewayAction = "config-apply-device-policy"
+	GatewayApplyControlConfig GatewayAction = "config-apply-control"
+)
+
+type GatewayClient interface {
+	Run(context.Context, GatewayAction, string) error
 }
 
 type ConfigurationRunner interface {
@@ -42,15 +51,15 @@ type ProfileApplyResult struct {
 
 type DirectRunner struct{}
 
-func (DirectRunner) Run(ctx context.Context, action, configPath string) error {
+func (DirectRunner) Run(ctx context.Context, action GatewayAction, configPath string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("privileged helper is not installed or reachable")
+		return fmt.Errorf("privileged gateway service is not installed or reachable")
 	}
 	var (
 		cfg config.Config
 		err error
 	)
-	if action == "start" {
+	if action == GatewayStart {
 		cfg, err = config.Load(configPath)
 	} else {
 		cfg, err = config.LoadRuntime(configPath)
@@ -60,99 +69,61 @@ func (DirectRunner) Run(ctx context.Context, action, configPath string) error {
 	}
 	manager := gateway.New(cfg)
 	switch action {
-	case "start":
+	case GatewayStart:
 		return manager.Start(ctx)
-	case "stop":
+	case GatewayStop:
 		return manager.Stop(ctx)
-	case "reload":
+	case GatewayReload:
 		return manager.Reload(ctx)
-	case "restart-mihomo":
+	case GatewayRestartMihomo:
 		return manager.RestartMihomo(ctx)
 	default:
 		return fmt.Errorf("unsupported privileged action %q", action)
 	}
 }
 
-func (DirectRunner) SetManual(ctx context.Context, _ string, cfg linuxnetwork.ManualConfig) error {
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("privileged helper is required")
-	}
-	return linuxnetwork.SetManual(ctx, cfg)
-}
-
-func (DirectRunner) SetDHCP(ctx context.Context, _ string, service string) error {
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("privileged helper is required")
-	}
-	return linuxnetwork.SetDHCP(ctx, service)
-}
-
-func (DirectRunner) ProbeDHCP(ctx context.Context, _ string, interfaceName string, timeout time.Duration) ([]string, error) {
-	if os.Geteuid() != 0 {
-		return nil, fmt.Errorf("privileged helper is required")
-	}
-	return linuxnetwork.ProbeDHCPServers(ctx, interfaceName, timeout)
-}
-
-type HelperClient struct {
+// UnixGatewayClient is the unprivileged-side client for the root-owned
+// gateway socket. The same client also carries configuration operations so
+// the Control API has one privilege boundary.
+type UnixGatewayClient struct {
 	SocketPath string
 }
 
 type HelperRequest struct {
-	Action         string                     `json:"action"`
-	ConfigPath     string                     `json:"config_path"`
-	Manual         *linuxnetwork.ManualConfig `json:"manual,omitempty"`
-	NetworkService string                     `json:"network_service,omitempty"`
-	Interface      string                     `json:"interface,omitempty"`
-	TimeoutMillis  int                        `json:"timeout_millis,omitempty"`
-	Revision       string                     `json:"revision,omitempty"`
-	Payload        []byte                     `json:"payload,omitempty"`
+	Action     string `json:"action"`
+	ConfigPath string `json:"config_path"`
+	Revision   string `json:"revision,omitempty"`
+	Payload    []byte `json:"payload,omitempty"`
 }
 
 type HelperResponse struct {
-	OK          bool     `json:"ok"`
-	Error       string   `json:"error,omitempty"`
-	DHCPServers []string `json:"dhcp_servers,omitempty"`
-	Revision    string   `json:"revision,omitempty"`
-	Reloaded    bool     `json:"reloaded,omitempty"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+	Revision string `json:"revision,omitempty"`
+	Reloaded bool   `json:"reloaded,omitempty"`
 }
 
-func (c HelperClient) Run(ctx context.Context, action, configPath string) error {
-	_, err := c.call(ctx, HelperRequest{Action: action, ConfigPath: configPath})
+func (c UnixGatewayClient) Run(ctx context.Context, action GatewayAction, configPath string) error {
+	_, err := c.call(ctx, HelperRequest{Action: string(action), ConfigPath: configPath})
 	return err
 }
 
-func (c HelperClient) SetManual(ctx context.Context, configPath string, cfg linuxnetwork.ManualConfig) error {
-	_, err := c.call(ctx, HelperRequest{Action: "network-set-manual", ConfigPath: configPath, Manual: &cfg})
-	return err
-}
-
-func (c HelperClient) SetDHCP(ctx context.Context, configPath, service string) error {
-	_, err := c.call(ctx, HelperRequest{Action: "network-set-dhcp", ConfigPath: configPath, NetworkService: service})
-	return err
-}
-
-func (c HelperClient) ProbeDHCP(ctx context.Context, configPath, interfaceName string, timeout time.Duration) ([]string, error) {
-	response, err := c.call(ctx, HelperRequest{Action: "dhcp-probe", ConfigPath: configPath, Interface: interfaceName, TimeoutMillis: int(timeout / time.Millisecond)})
-	return response.DHCPServers, err
-}
-
-func (c HelperClient) ApplyProfile(ctx context.Context, configPath, revision string, payload []byte) (ProfileApplyResult, error) {
-	response, err := c.call(ctx, HelperRequest{Action: "config-apply-profile", ConfigPath: configPath, Revision: revision, Payload: payload})
+func (c UnixGatewayClient) ApplyProfile(ctx context.Context, configPath, revision string, payload []byte) (ProfileApplyResult, error) {
+	response, err := c.call(ctx, HelperRequest{Action: string(GatewayApplyProfile), ConfigPath: configPath, Revision: revision, Payload: payload})
 	return ProfileApplyResult{Revision: response.Revision, Reloaded: response.Reloaded}, err
 }
 
-func (c HelperClient) ApplyDevicePolicy(ctx context.Context, configPath, revision string, payload []byte) (string, error) {
-	response, err := c.call(ctx, HelperRequest{Action: "config-apply-device-policy", ConfigPath: configPath, Revision: revision, Payload: payload})
+func (c UnixGatewayClient) ApplyDevicePolicy(ctx context.Context, configPath, revision string, payload []byte) (string, error) {
+	response, err := c.call(ctx, HelperRequest{Action: string(GatewayApplyDevicePolicy), ConfigPath: configPath, Revision: revision, Payload: payload})
 	return response.Revision, err
 }
 
-func (c HelperClient) ApplyControlConfig(ctx context.Context, configPath, revision string, payload []byte) (string, error) {
-	response, err := c.call(ctx, HelperRequest{Action: "config-apply-control", ConfigPath: configPath, Revision: revision, Payload: payload})
+func (c UnixGatewayClient) ApplyControlConfig(ctx context.Context, configPath, revision string, payload []byte) (string, error) {
+	response, err := c.call(ctx, HelperRequest{Action: string(GatewayApplyControlConfig), ConfigPath: configPath, Revision: revision, Payload: payload})
 	return response.Revision, err
 }
 
-func (c HelperClient) call(ctx context.Context, request HelperRequest) (HelperResponse, error) {
+func (c UnixGatewayClient) call(ctx context.Context, request HelperRequest) (HelperResponse, error) {
 	dialer := net.Dialer{Timeout: 2 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", c.SocketPath)
 	if err != nil {
@@ -173,9 +144,9 @@ func (c HelperClient) call(ctx context.Context, request HelperRequest) (HelperRe
 	return response, nil
 }
 
-func ServeHelper(ctx context.Context, socketPath, allowedRoot, socketGroup string) error {
+func ServeGateway(ctx context.Context, socketPath, allowedRoot, socketGroup string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("opensurge-helper must run as root")
+		return fmt.Errorf("opensurge-gateway must run as root")
 	}
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return err
@@ -190,14 +161,14 @@ func ServeHelper(ctx context.Context, socketPath, allowedRoot, socketGroup strin
 	if socketGroup != "" {
 		group, err := user.LookupGroup(socketGroup)
 		if err != nil {
-			return fmt.Errorf("lookup helper socket group: %w", err)
+			return fmt.Errorf("lookup gateway socket group: %w", err)
 		}
 		gid, err := strconv.Atoi(group.Gid)
 		if err != nil {
-			return fmt.Errorf("parse helper socket group: %w", err)
+			return fmt.Errorf("parse gateway socket group: %w", err)
 		}
 		if err := os.Chown(socketPath, 0, gid); err != nil {
-			return fmt.Errorf("set helper socket group: %w", err)
+			return fmt.Errorf("set gateway socket group: %w", err)
 		}
 	}
 	if err := os.Chmod(socketPath, 0o660); err != nil {
@@ -205,7 +176,7 @@ func ServeHelper(ctx context.Context, socketPath, allowedRoot, socketGroup strin
 	}
 	go func() {
 		<-ctx.Done()
-		listener.Close()
+		_ = listener.Close()
 	}()
 	for {
 		conn, err := listener.Accept()
@@ -215,11 +186,11 @@ func ServeHelper(ctx context.Context, socketPath, allowedRoot, socketGroup strin
 			}
 			return err
 		}
-		go handleHelperConn(ctx, conn, allowedRoot)
+		go handleGatewayConn(ctx, conn, allowedRoot)
 	}
 }
 
-func handleHelperConn(ctx context.Context, conn net.Conn, allowedRoot string) {
+func handleGatewayConn(ctx context.Context, conn net.Conn, allowedRoot string) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 	var request HelperRequest
@@ -227,7 +198,8 @@ func handleHelperConn(ctx context.Context, conn net.Conn, allowedRoot string) {
 		_ = json.NewEncoder(conn).Encode(HelperResponse{Error: err.Error()})
 		return
 	}
-	if !helperActionAllowed(request.Action) {
+	action := GatewayAction(request.Action)
+	if !helperActionAllowed(action) {
 		_ = json.NewEncoder(conn).Encode(HelperResponse{Error: "action is not allowed"})
 		return
 	}
@@ -243,59 +215,39 @@ func handleHelperConn(ctx context.Context, conn net.Conn, allowedRoot string) {
 	}
 	var cfg config.Config
 	if err == nil {
-		cfg, err = loadHelperConfig(request.Action, configPath)
+		cfg, err = loadGatewayConfig(action, configPath)
 	}
 	if err == nil {
 		err = requireTrustedRuntime(cfg, allowedRoot)
 	}
-	if err == nil && (request.Action == "start" || request.Action == "reload" || request.Action == "restart-mihomo" || request.Action == "config-apply-profile") {
+	if err == nil && (action == GatewayStart || action == GatewayReload || action == GatewayRestartMihomo || action == GatewayApplyProfile) {
 		err = requireTrustedStartInputs(cfg, allowedRoot)
 	}
-	if err == nil && (request.Action == "config-apply-profile" || request.Action == "config-apply-control") {
+	if err == nil && (action == GatewayApplyProfile || action == GatewayApplyControlConfig) {
 		err = requireTrustedDirectory(filepath.Join(filepath.Dir(configPath), "data"), allowedRoot)
 	}
-	if err == nil && request.Action == "config-apply-device-policy" {
+	if err == nil && action == GatewayApplyDevicePolicy {
 		if cfg.DevicePolicy.File == "" {
 			err = fmt.Errorf("device_policy.file is not configured")
 		} else {
 			err = requireTrustedFile(cfg.DevicePolicy.File, allowedRoot, false)
 		}
 	}
-	if err == nil && request.Action == "config-apply-device-policy" {
+	if err == nil && action == GatewayApplyDevicePolicy {
 		err = requireTrustedStartInputs(cfg, allowedRoot)
 	}
 	response := HelperResponse{}
 	if err == nil {
 		runner := DirectRunner{}
-		switch request.Action {
-		case "start", "stop", "reload", "restart-mihomo":
-			err = runner.Run(ctx, request.Action, configPath)
-		case "network-set-manual":
-			if request.Manual == nil {
-				err = fmt.Errorf("manual network configuration is required")
-			} else if err = validateHelperManualNetwork(ctx, cfg, *request.Manual); err == nil {
-				err = runner.SetManual(ctx, configPath, *request.Manual)
-			}
-		case "network-set-dhcp":
-			if err = validateHelperNetworkTarget(ctx, cfg, request.NetworkService, cfg.Gateway.Interface); err == nil {
-				err = runner.SetDHCP(ctx, configPath, request.NetworkService)
-			}
-		case "dhcp-probe":
-			if request.Interface != cfg.Gateway.Interface {
-				err = fmt.Errorf("DHCP probe interface does not match configured gateway interface")
-			} else {
-				timeout := time.Duration(request.TimeoutMillis) * time.Millisecond
-				if timeout < time.Second || timeout > 10*time.Second {
-					timeout = 3 * time.Second
-				}
-				response.DHCPServers, err = runner.ProbeDHCP(ctx, configPath, request.Interface, timeout)
-			}
-		case "config-apply-profile":
+		switch action {
+		case GatewayStart, GatewayStop, GatewayReload, GatewayRestartMihomo:
+			err = runner.Run(ctx, action, configPath)
+		case GatewayApplyProfile:
 			result, applyErr := runner.ApplyProfile(ctx, configPath, request.Revision, request.Payload)
 			response.Revision, response.Reloaded, err = result.Revision, result.Reloaded, applyErr
-		case "config-apply-device-policy":
+		case GatewayApplyDevicePolicy:
 			response.Revision, err = runner.ApplyDevicePolicy(ctx, configPath, request.Revision, request.Payload)
-		case "config-apply-control":
+		case GatewayApplyControlConfig:
 			response.Revision, err = runner.ApplyControlConfig(ctx, configPath, request.Revision, request.Payload)
 		}
 	}
@@ -306,44 +258,20 @@ func handleHelperConn(ctx context.Context, conn net.Conn, allowedRoot string) {
 	_ = json.NewEncoder(conn).Encode(response)
 }
 
-func loadHelperConfig(action, configPath string) (config.Config, error) {
-	if action == "stop" || action == "restart-mihomo" {
+func loadGatewayConfig(action GatewayAction, configPath string) (config.Config, error) {
+	if action == GatewayStop || action == GatewayRestartMihomo {
 		return config.LoadRuntime(configPath)
 	}
 	return config.Load(configPath)
 }
 
-func helperActionAllowed(action string) bool {
+func helperActionAllowed(action GatewayAction) bool {
 	switch action {
-	case "start", "stop", "reload", "restart-mihomo", "network-set-manual", "network-set-dhcp", "dhcp-probe", "config-apply-profile", "config-apply-device-policy", "config-apply-control":
+	case GatewayStart, GatewayStop, GatewayReload, GatewayRestartMihomo, GatewayApplyProfile, GatewayApplyDevicePolicy, GatewayApplyControlConfig:
 		return true
 	default:
 		return false
 	}
-}
-
-func validateHelperNetworkTarget(ctx context.Context, cfg config.Config, service, interfaceName string) error {
-	if interfaceName != cfg.Gateway.Interface {
-		return fmt.Errorf("network interface does not match configured gateway interface")
-	}
-	actual, err := linuxnetwork.ServiceInterface(ctx, service)
-	if err != nil {
-		return err
-	}
-	if actual != interfaceName {
-		return fmt.Errorf("network service %q uses %s, not configured interface %s", service, actual, interfaceName)
-	}
-	return nil
-}
-
-func validateHelperManualNetwork(ctx context.Context, cfg config.Config, manual linuxnetwork.ManualConfig) error {
-	if err := validateHelperNetworkTarget(ctx, cfg, manual.NetworkService, manual.Interface); err != nil {
-		return err
-	}
-	if manual.IPv4 != cfg.Gateway.LANIP {
-		return fmt.Errorf("manual IPv4 does not match configured gateway LAN IP")
-	}
-	return linuxnetwork.ValidateManual(manual)
 }
 
 func requireRootOwnedConfig(path string) error {
@@ -356,10 +284,10 @@ func requireRootOwnedConfig(path string) error {
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != 0 {
-		return fmt.Errorf("helper config must be owned by root")
+		return fmt.Errorf("gateway config must be owned by root")
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("helper config must not be writable by group or other")
+		return fmt.Errorf("gateway config must not be writable by group or other")
 	}
 	return nil
 }
@@ -491,7 +419,7 @@ func ioLimitReader(conn net.Conn, n int64) *limitedReader { return &limitedReade
 
 func (r *limitedReader) Read(p []byte) (int, error) {
 	if r.n <= 0 {
-		return 0, fmt.Errorf("helper request too large")
+		return 0, fmt.Errorf("gateway request too large")
 	}
 	if int64(len(p)) > r.n {
 		p = p[:r.n]

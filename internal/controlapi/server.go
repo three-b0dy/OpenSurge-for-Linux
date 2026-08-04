@@ -1,7 +1,6 @@
 package controlapi
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -24,53 +23,50 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
 type Options struct {
-	ConfigPath        string
-	Addr              string
-	StoreDir          string
-	Runner            ActionRunner
-	NetworkRunner     NetworkRunner
-	ConfigRunner      ConfigurationRunner
-	AdminStore        AdminStore
-	TLSCertFile       string
-	TLSKeyFile        string
-	DiscoverNetwork   func(context.Context, string, string) (linuxnetwork.Snapshot, error)
-	ListInterfaces    func(context.Context) ([]linuxnetwork.InterfaceOption, error)
-	DiscoverNeighbors func(context.Context, string) ([]linuxnetwork.Neighbor, error)
-	PingRouter        func(context.Context, string) error
-	Static            http.Handler
-	Credentials       SourceCredentialStore
+	ConfigPath         string
+	Addr               string
+	StoreDir           string
+	Runner             GatewayClient
+	ConfigRunner       ConfigurationRunner
+	AdminStore         AdminStore
+	TLSCertFile        string
+	TLSKeyFile         string
+	InterfaceInspector linuxnet.InterfaceInspector
+	ListInterfaces     func(context.Context) ([]InterfaceOption, error)
+	DiscoverNeighbors  func(context.Context, string) ([]linuxnet.Neighbor, error)
+	Static             http.Handler
+	Credentials        SourceCredentialStore
 }
 
 type Server struct {
-	configPath        string
-	addr              string
-	store             *Store
-	runner            ActionRunner
-	networkRunner     NetworkRunner
-	configRunner      ConfigurationRunner
-	discoverNetwork   func(context.Context, string, string) (linuxnetwork.Snapshot, error)
-	listInterfaces    func(context.Context) ([]linuxnetwork.InterfaceOption, error)
-	discoverNeighbors func(context.Context, string) ([]linuxnetwork.Neighbor, error)
-	pingRouter        func(context.Context, string) error
-	static            http.Handler
-	credentials       SourceCredentialStore
-	adminStore        AdminStore
-	tlsCertFile       string
-	tlsKeyFile        string
-	managementHost    string
-	managementPort    string
-	fetchConnections  func(context.Context, config.Config) (mihomo.ConnectionsSnapshot, error)
-	fetchProxyHealth  func(context.Context, config.Config) (mihomo.ProxyHealthSnapshot, error)
-	measureProxyDelay func(context.Context, config.Config, string, string, time.Duration) mihomo.ProxyDelayResult
-	probeConnectivity func(context.Context, config.Config, ConnectivityTarget) ConnectivityResult
-	trafficSampler    *trafficRateSampler
-	baseURL           string
+	configPath         string
+	addr               string
+	store              *Store
+	runner             GatewayClient
+	configRunner       ConfigurationRunner
+	interfaceInspector linuxnet.InterfaceInspector
+	listInterfaces     func(context.Context) ([]InterfaceOption, error)
+	discoverNeighbors  func(context.Context, string) ([]linuxnet.Neighbor, error)
+	static             http.Handler
+	credentials        SourceCredentialStore
+	adminStore         AdminStore
+	tlsCertFile        string
+	tlsKeyFile         string
+	managementHost     string
+	managementPort     string
+	fetchConnections   func(context.Context, config.Config) (mihomo.ConnectionsSnapshot, error)
+	fetchProxyHealth   func(context.Context, config.Config) (mihomo.ProxyHealthSnapshot, error)
+	measureProxyDelay  func(context.Context, config.Config, string, string, time.Duration) mihomo.ProxyDelayResult
+	probeConnectivity  func(context.Context, config.Config, ConnectivityTarget) ConnectivityResult
+	trafficSampler     *trafficRateSampler
+	baseURL            string
 
 	mu            sync.Mutex
 	sessions      map[string]time.Time
@@ -133,36 +129,33 @@ func New(options Options) (*Server, error) {
 		return nil, err
 	}
 	if options.Runner == nil {
-		options.Runner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
-	}
-	if options.NetworkRunner == nil {
-		if runner, ok := options.Runner.(NetworkRunner); ok {
-			options.NetworkRunner = runner
-		} else {
-			options.NetworkRunner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
-		}
+		options.Runner = UnixGatewayClient{SocketPath: "/run/opensurge/gateway.sock"}
 	}
 	if options.ConfigRunner == nil {
 		if runner, ok := options.Runner.(ConfigurationRunner); ok {
 			options.ConfigRunner = runner
 		} else {
-			options.ConfigRunner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
+			options.ConfigRunner = UnixGatewayClient{SocketPath: "/run/opensurge/gateway.sock"}
 		}
 	}
 	if options.AdminStore == nil {
 		options.AdminStore = NewFileAdminStore(store.Dir())
 	}
-	if options.DiscoverNetwork == nil {
-		options.DiscoverNetwork = linuxnetwork.Discover
+	if options.InterfaceInspector == nil {
+		options.InterfaceInspector = linuxnet.NewIPRoute(func(_ context.Context, name string, args ...string) ([]byte, error) {
+			return process.Output(name, args...)
+		})
 	}
 	if options.ListInterfaces == nil {
-		options.ListInterfaces = linuxnetwork.ListInterfaces
+		options.ListInterfaces = func(ctx context.Context) ([]InterfaceOption, error) {
+			return listLinuxInterfaces(ctx, options.InterfaceInspector)
+		}
 	}
 	if options.DiscoverNeighbors == nil {
-		options.DiscoverNeighbors = linuxnetwork.DiscoverNeighbors
-	}
-	if options.PingRouter == nil {
-		options.PingRouter = linuxnetwork.PingRouter
+		inspector := options.InterfaceInspector
+		options.DiscoverNeighbors = func(ctx context.Context, name string) ([]linuxnet.Neighbor, error) {
+			return inspector.Neighbors(ctx, name)
+		}
 	}
 	if options.Credentials == nil {
 		fileCredentials := NewFileCredentialStore(store.Dir())
@@ -177,32 +170,52 @@ func New(options Options) (*Server, error) {
 		return nil, err
 	}
 	return &Server{
-		configPath:        configPath,
-		addr:              options.Addr,
-		store:             store,
-		runner:            options.Runner,
-		networkRunner:     options.NetworkRunner,
-		configRunner:      options.ConfigRunner,
-		discoverNetwork:   options.DiscoverNetwork,
-		listInterfaces:    options.ListInterfaces,
-		discoverNeighbors: options.DiscoverNeighbors,
-		pingRouter:        options.PingRouter,
-		static:            options.Static,
-		credentials:       options.Credentials,
-		adminStore:        options.AdminStore,
-		tlsCertFile:       options.TLSCertFile,
-		tlsKeyFile:        options.TLSKeyFile,
-		managementHost:    host,
-		managementPort:    port,
-		fetchConnections:  mihomo.FetchConnections,
-		fetchProxyHealth:  mihomo.FetchProxyHealth,
-		measureProxyDelay: mihomo.MeasureProxyDelay,
-		probeConnectivity: probeConnectivityTarget,
-		trafficSampler:    newTrafficRateSampler(),
-		baseURL:           "https://" + options.Addr,
-		sessions:          map[string]time.Time{},
-		loginFailures:     map[string][]time.Time{},
+		configPath:         configPath,
+		addr:               options.Addr,
+		store:              store,
+		runner:             options.Runner,
+		configRunner:       options.ConfigRunner,
+		interfaceInspector: options.InterfaceInspector,
+		listInterfaces:     options.ListInterfaces,
+		discoverNeighbors:  options.DiscoverNeighbors,
+		static:             options.Static,
+		credentials:        options.Credentials,
+		adminStore:         options.AdminStore,
+		tlsCertFile:        options.TLSCertFile,
+		tlsKeyFile:         options.TLSKeyFile,
+		managementHost:     host,
+		managementPort:     port,
+		fetchConnections:   mihomo.FetchConnections,
+		fetchProxyHealth:   mihomo.FetchProxyHealth,
+		measureProxyDelay:  mihomo.MeasureProxyDelay,
+		probeConnectivity:  probeConnectivityTarget,
+		trafficSampler:     newTrafficRateSampler(),
+		baseURL:            "https://" + options.Addr,
+		sessions:           map[string]time.Time{},
+		loginFailures:      map[string][]time.Time{},
 	}, nil
+}
+
+func listLinuxInterfaces(ctx context.Context, inspector linuxnet.InterfaceInspector) ([]InterfaceOption, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]InterfaceOption, 0, len(interfaces))
+	for _, iface := range interfaces {
+		prefixes, err := inspector.Addresses(ctx, iface.Name)
+		if err != nil {
+			return nil, err
+		}
+		ipv4 := make([]string, 0, len(prefixes))
+		for _, prefix := range prefixes {
+			if prefix.Addr().Is4() {
+				ipv4 = append(ipv4, prefix.String())
+			}
+		}
+		result = append(result, InterfaceOption{Name: iface.Name, IPv4: ipv4})
+	}
+	return result, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -214,29 +227,16 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/overview", s.auth(http.HandlerFunc(s.handleOverview)))
 	mux.Handle("GET /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
 	mux.Handle("PUT /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
-	mux.Handle("GET /api/v1/menubar", s.auth(http.HandlerFunc(s.handleMenuBar)))
-	mux.Handle("GET /api/v1/gateway/plan", s.auth(http.HandlerFunc(s.handleGatewayPlan)))
-	mux.Handle("POST /api/v1/gateway/plan", s.auth(http.HandlerFunc(s.handleGatewayPlan)))
 	mux.Handle("POST /api/v1/gateway/start", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("POST /api/v1/gateway/stop", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("POST /api/v1/gateway/reload", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("POST /api/v1/gateway/restart-mihomo", s.auth(http.HandlerFunc(s.handleGatewayAction)))
 	mux.Handle("GET /api/v1/recovery", s.auth(http.HandlerFunc(s.handleRecovery)))
 	mux.Handle("POST /api/v1/recovery", s.auth(http.HandlerFunc(s.handleRecovery)))
-	mux.Handle("GET /api/v1/recovery/card", s.auth(http.HandlerFunc(s.handleRecoveryCard)))
-	mux.Handle("POST /api/v1/recovery/discard", s.auth(http.HandlerFunc(s.handleRecoveryDiscard)))
-	mux.Handle("POST /api/v1/recovery/prepare", s.auth(http.HandlerFunc(s.handleRecoveryPrepare)))
-	mux.Handle("POST /api/v1/recovery/abandon-takeover", s.auth(http.HandlerFunc(s.handleAbandonTakeover)))
 	mux.Handle("POST /api/v1/recovery/router-restored", s.auth(http.HandlerFunc(s.handleRouterRestored)))
-	mux.Handle("POST /api/v1/recovery/manual-finish", s.auth(http.HandlerFunc(s.handleManualRecoveryFinish)))
 	mux.Handle("POST /api/v1/recovery/client-validated", s.auth(http.HandlerFunc(s.handleClientValidated)))
 	mux.Handle("POST /api/v1/recovery/client-validation-skip", s.auth(http.HandlerFunc(s.handleClientValidationSkip)))
-	mux.Handle("POST /api/v1/recovery/keep-static", s.auth(http.HandlerFunc(s.handleKeepStaticFinish)))
-	mux.Handle("GET /api/v1/network/discovery", s.auth(http.HandlerFunc(s.handleNetworkDiscovery)))
 	mux.Handle("GET /api/v1/network/interfaces", s.auth(http.HandlerFunc(s.handleNetworkInterfaces)))
-	mux.Handle("POST /api/v1/network/apply-static", s.auth(http.HandlerFunc(s.handleApplyStatic)))
-	mux.Handle("POST /api/v1/network/dhcp-probe", s.auth(http.HandlerFunc(s.handleDHCPProbe)))
-	mux.Handle("POST /api/v1/network/restore-dhcp", s.auth(http.HandlerFunc(s.handleRestoreDHCP)))
 	mux.Handle("GET /api/v1/sources", s.auth(http.HandlerFunc(s.handleSources)))
 	mux.Handle("POST /api/v1/sources", s.auth(http.HandlerFunc(s.handleSources)))
 	mux.Handle("POST /api/v1/sources/{id}/refresh", s.auth(http.HandlerFunc(s.handleSourceRefresh)))
@@ -280,11 +280,6 @@ func (s *Server) handleControlConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, controlConfigFrom(cfg, revision))
 		return
 	}
-	recovery, _ := s.store.Recovery()
-	if recovery.Required && recovery.Stage != RecoveryPrepared {
-		writeError(w, http.StatusConflict, "recovery_required", "finish network recovery before editing topology")
-		return
-	}
 	match := strings.Trim(r.Header.Get("If-Match"), `"`)
 	if match == "" || match != revision {
 		writeError(w, http.StatusConflict, "revision_conflict", "If-Match must contain the current config revision")
@@ -311,15 +306,6 @@ func (s *Server) handleControlConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err = config.Load(s.configPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "config_reload_failed", err.Error())
-		return
-	}
-	if recovery.Stage == RecoveryPrepared {
-		if err := s.store.DiscardPreparedRecovery(cfg.Gateway.Mode); err != nil {
-			writeError(w, http.StatusInternalServerError, "recovery_discard_failed", "configuration was saved but the prepared recovery card could not be discarded: "+err.Error())
-			return
-		}
-	} else if err := s.store.SaveRecovery(RecoveryState{SchemaVersion: SchemaVersion, Stage: RecoveryIdle, Topology: cfg.Gateway.Mode}); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
 		return
 	}
 	w.Header().Set("ETag", `"`+newRevision+`"`)
@@ -721,71 +707,6 @@ func (s *Server) overview(ctx context.Context) (Overview, error) {
 	}, nil
 }
 
-func (s *Server) handleMenuBar(w http.ResponseWriter, r *http.Request) {
-	overview, err := s.overview(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "menubar_unavailable", err.Error())
-		return
-	}
-	cfg, _ := config.LoadRuntime(s.configPath)
-	writeJSON(w, http.StatusOK, MenuBarStatus{
-		SchemaVersion: SchemaVersion, Revision: overview.Revision, Gateway: overview.Status.Gateway,
-		Topology: cfg.Gateway.Mode, LANIP: overview.Status.LANIP, DHCP: overview.Status.DHCP,
-		Mihomo: overview.Status.Mihomo, Nftables: overview.Status.Nftables, Forwarding: overview.Status.Forwarding,
-		TUN: overview.Status.TUN, TUNInterface: overview.Status.TUNInterface, TUNError: overview.Status.TUNError,
-		ClientCount: overview.Status.ClientCount, Drift: overview.Drift, DoctorHealthy: overview.DoctorHealthy,
-		Recovery: overview.Recovery.Required, RecoveryStage: overview.Recovery.Stage, Warnings: overview.Warnings,
-	})
-}
-
-func (s *Server) handleGatewayPlan(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.Load(s.configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
-		return
-	}
-	request := GatewayPlanRequest{}
-	if r.Method == http.MethodPost && r.ContentLength != 0 {
-		if err := decodeJSON(r, &request, 64<<10); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-	}
-	snapshot, err := s.discoverNetwork(r.Context(), request.NetworkService, cfg.Gateway.Interface)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "network_discovery_failed", err.Error())
-		return
-	}
-	plan := GatewayPlan{SchemaVersion: SchemaVersion, Revision: fileDigest(s.configPath), Topology: cfg.Gateway.Mode, Snapshot: snapshot, DHCPServers: []string{}, Warnings: []string{}, Blockers: []string{}}
-	plan.ProtectedIPv4 = uniqueStrings(append([]string{cfg.Gateway.LANIP, snapshot.Router}, cfg.DevicePolicy.ProtectedIPv4...))
-	if cfg.Gateway.Mode == config.GatewayModeSameWiFiDHCP {
-		if cfg.Gateway.Interface != cfg.Gateway.UpstreamInterface {
-			plan.Blockers = append(plan.Blockers, "same-LAN DHCP takeover requires one shared interface")
-		}
-		if snapshot.IPv4 != cfg.Gateway.LANIP {
-			plan.Blockers = append(plan.Blockers, fmt.Sprintf("gateway host IPv4 %s differs from configured gateway.lan_ip %s", snapshot.IPv4, cfg.Gateway.LANIP))
-		}
-		if snapshot.IPv6Default {
-			plan.Warnings = append(plan.Warnings, "IPv6 default route is active; per-device IPv4 policy can be bypassed")
-		}
-		if err := s.pingRouter(r.Context(), snapshot.Router); err != nil {
-			plan.Blockers = append(plan.Blockers, "upstream router is not reachable: "+err.Error())
-		}
-		if request.RouterDHCPDisabled {
-			servers, err := s.networkRunner.ProbeDHCP(r.Context(), s.configPath, cfg.Gateway.Interface, 3*time.Second)
-			if err != nil {
-				plan.Blockers = append(plan.Blockers, "DHCP probe failed: "+err.Error())
-			} else {
-				plan.DHCPServers = servers
-			}
-			if len(plan.DHCPServers) > 0 {
-				plan.Blockers = append(plan.Blockers, "another DHCP server is still answering: "+strings.Join(plan.DHCPServers, ", "))
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, plan)
-}
-
 func (s *Server) handleGatewayAction(w http.ResponseWriter, r *http.Request) {
 	action := strings.TrimPrefix(r.URL.Path, "/api/v1/gateway/")
 	if action != "start" && action != "stop" && action != "reload" && action != "restart-mihomo" {
@@ -853,7 +774,7 @@ func (s *Server) handleGatewayAction(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runOperation(op Operation, topology string, recoveryBefore RecoveryState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	err := s.runner.Run(ctx, op.Kind, s.configPath)
+	err := s.runner.Run(ctx, GatewayAction(op.Kind), s.configPath)
 	op.UpdatedAt = time.Now().UTC()
 	if err != nil {
 		op.State = "failed"
@@ -934,6 +855,13 @@ func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, op)
 }
 
+func appendRecoveryNote(state *RecoveryState, note string) {
+	if state.RecoveryNotes != "" {
+		state.RecoveryNotes += "; "
+	}
+	state.RecoveryNotes += note
+}
+
 func (s *Server) handleOperations(w http.ResponseWriter, _ *http.Request) {
 	operations, err := s.store.Operations(50)
 	if err != nil {
@@ -958,8 +886,33 @@ func (s *Server) handleRecovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	current, _ := s.store.Recovery()
-	current.RecoveryNotes = update.RecoveryNotes
+	current, err := s.store.Recovery()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "recovery_read_failed", err.Error())
+		return
+	}
+	if update.Stage != "" && update.Stage != current.Stage && !allowedRecoveryTransition(current.Stage, update.Stage) {
+		writeError(w, http.StatusConflict, "recovery_transition_rejected", "the requested confirmation is not valid for the current gateway checklist stage")
+		return
+	}
+	if update.Stage == RecoveryRouterDHCPDisabledConfirmed {
+		cfg, loadErr := config.LoadRuntime(s.configPath)
+		if loadErr != nil {
+			writeError(w, http.StatusBadRequest, "config_invalid", loadErr.Error())
+			return
+		}
+		if cfg.Gateway.Mode != config.GatewayModeSameWiFiDHCP {
+			writeError(w, http.StatusConflict, "same_wifi_config_required", "router DHCP confirmation is only used by same_wifi_dhcp")
+			return
+		}
+	}
+	if update.Stage != "" {
+		current.Stage = update.Stage
+		current.Required = update.Stage != RecoveryIdle && update.Stage != RecoveryComplete
+	}
+	if update.RecoveryNotes != "" {
+		current.RecoveryNotes = update.RecoveryNotes
+	}
 	if err := s.store.SaveRecovery(current); err != nil {
 		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
 		return
@@ -967,112 +920,71 @@ func (s *Server) handleRecovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, current)
 }
 
-func (s *Server) handleRecoveryCard(w http.ResponseWriter, r *http.Request) {
-	state, err := s.store.Recovery()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_read_failed", err.Error())
-		return
+func allowedRecoveryTransition(from, to string) bool {
+	if from == "" {
+		from = RecoveryIdle
 	}
-	if state.NetworkSnapshot == nil || state.Stage == RecoveryIdle {
-		writeError(w, http.StatusNotFound, "recovery_card_missing", "no recovery card is available")
-		return
+	if to == RecoveryIdle {
+		return true
 	}
-	card, err := s.store.RecoveryCard()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusNotFound, "recovery_card_missing", "no recovery card is available")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "recovery_card_read_failed", err.Error())
-		return
+	switch from {
+	case RecoveryIdle, RecoveryComplete:
+		return to == RecoveryRouterDHCPDisabledConfirmed
+	case RecoveryRouterDHCPDisabledConfirmed:
+		return to == RecoveryGatewayActive
+	case RecoveryGatewayActive:
+		return to == RecoveryClientValidated || to == RecoveryClientValidationSkipped || to == RecoveryGatewayStopped
+	case RecoveryClientValidated, RecoveryClientValidationSkipped:
+		return to == RecoveryGatewayStopped
+	case RecoveryGatewayStopped:
+		return to == RecoveryRouterDHCPRestored
+	case RecoveryRouterDHCPRestored:
+		return to == RecoveryComplete
+	default:
+		return false
 	}
-	disposition := "inline"
-	if r.URL.Query().Get("download") == "1" {
-		disposition = "attachment"
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", disposition+`; filename="OpenSurge-WiFi-DHCP-Recovery-Card.txt"`)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(card)
 }
 
-func (s *Server) handleRecoveryDiscard(w http.ResponseWriter, _ *http.Request) {
-	state, err := s.store.Recovery()
+func (s *Server) handleNetworkInterfaces(w http.ResponseWriter, r *http.Request) {
+	interfaces, err := s.listInterfaces(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_read_failed", err.Error())
+		writeError(w, http.StatusUnprocessableEntity, "network_interfaces_failed", err.Error())
 		return
 	}
-	if state.Stage != RecoveryPrepared {
-		writeError(w, http.StatusConflict, "recovery_precondition", "only prepared recovery data can be discarded before network changes begin")
-		return
-	}
-	if err := s.store.DiscardPreparedRecovery(state.Topology); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_discard_failed", err.Error())
-		return
-	}
-	idle, _ := s.store.Recovery()
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: idle})
+	writeJSON(w, http.StatusOK, NetworkInterfacesResponse{SchemaVersion: SchemaVersion, Interfaces: interfaces})
 }
 
-func (s *Server) handleAbandonTakeover(w http.ResponseWriter, r *http.Request) {
-	state, err := s.store.Recovery()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_read_failed", err.Error())
+func (s *Server) handleRouterRestored(w http.ResponseWriter, r *http.Request) {
+	state, _ := s.store.Recovery()
+	if state.Stage != RecoveryGatewayStopped {
+		writeError(w, http.StatusConflict, "recovery_precondition", "stop the gateway before recording router DHCP restoration")
 		return
 	}
-	if state.Stage != RecoveryGatewayStatic && state.Stage != RecoveryRouterDHCPDisabledConfirmed {
-		writeError(w, http.StatusConflict, "recovery_precondition", "takeover can be abandoned only after the gateway host uses fixed IPv4 and before the gateway becomes active")
+	var confirmation struct {
+		Confirmed bool `json:"router_dhcp_restored_confirmed"`
+	}
+	if err := decodeJSON(r, &confirmation, 64<<10); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if state.NetworkSnapshot == nil {
-		writeError(w, http.StatusConflict, "recovery_snapshot_missing", "saved network recovery data is missing")
+	if !confirmation.Confirmed {
+		writeError(w, http.StatusUnprocessableEntity, "router_dhcp_confirmation_required", "confirm router DHCP was restored in the router administration interface")
 		return
 	}
-	cfg, err := config.LoadRuntime(s.configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
-		return
-	}
-	if cfg.Gateway.Mode != config.GatewayModeSameWiFiDHCP {
-		writeError(w, http.StatusConflict, "same_wifi_config_required", "takeover abandonment requires the same-LAN DHCP takeover topology")
-		return
-	}
-	if _, exists, stateErr := runtime.LoadState(runtime.NewPaths(cfg).StateFile); stateErr != nil {
-		writeError(w, http.StatusInternalServerError, "runtime_state_invalid", stateErr.Error())
-		return
-	} else if exists {
-		writeError(w, http.StatusConflict, "gateway_still_active", "stop the gateway before abandoning DHCP takeover")
-		return
-	}
-
-	servers, err := s.networkRunner.ProbeDHCP(r.Context(), s.configPath, state.NetworkSnapshot.Interface, 3*time.Second)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "dhcp_probe_failed", err.Error())
-		return
-	}
-	if len(servers) > 0 {
-		if err := s.networkRunner.SetDHCP(r.Context(), s.configPath, state.NetworkSnapshot.NetworkService); err != nil {
-			writeError(w, http.StatusBadGateway, "restore_dhcp_failed", err.Error())
-			return
-		}
-		appendRecoveryNote(&state, "DHCP takeover abandoned; a DHCP server answered; automatic DHCP restoration is owned by the Linux gateway lifecycle")
-		state.Stage, state.Required = RecoveryComplete, false
-	} else {
-		appendRecoveryNote(&state, "DHCP takeover abandoned while no DHCP server answered; the gateway host remains on fixed IPv4 and router DHCP availability was not verified")
-		state.Stage, state.Required = RecoveryCompleteStatic, false
-	}
+	state.Stage = RecoveryRouterDHCPRestored
+	state.Required = true
+	appendRecoveryNote(&state, "router DHCP restoration was confirmed by the operator; OpenSurge did not modify the upstream router")
 	if err := s.store.SaveRecovery(state); err != nil {
 		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state, DHCPServers: servers})
+	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
 }
 
 func (s *Server) handleClientValidated(w http.ResponseWriter, r *http.Request) {
 	state, _ := s.store.Recovery()
 	if state.Stage != RecoveryGatewayActive {
-		writeError(w, http.StatusConflict, "recovery_precondition", "gateway must be active before client acceptance")
+		writeError(w, http.StatusConflict, "recovery_precondition", "gateway must be active before recording client validation")
 		return
 	}
 	var request ClientAcceptanceRequest
@@ -1082,10 +994,6 @@ func (s *Server) handleClientValidated(w http.ResponseWriter, r *http.Request) {
 	}
 	if !request.GatewayDNSConfirmed || !request.NoExplicitProxyConfirmed {
 		writeError(w, http.StatusUnprocessableEntity, "client_confirmation_required", "confirm client gateway/DNS and no explicit proxy")
-		return
-	}
-	if state.NetworkSnapshot != nil && state.NetworkSnapshot.IPv6Default && !request.IPv6BypassWarningConfirmed {
-		writeError(w, http.StatusUnprocessableEntity, "ipv6_warning_unacknowledged", "acknowledge that IPv6 may bypass cooperative IPv4 policy")
 		return
 	}
 	cfg, err := config.LoadRuntime(s.configPath)
@@ -1099,7 +1007,7 @@ func (s *Server) handleClientValidated(w http.ResponseWriter, r *http.Request) {
 	}
 	state.Stage = RecoveryClientValidated
 	state.ClientValidationSkipped = false
-	state.RecoveryNotes = fmt.Sprintf("client %s: DHCP ACK, DNS and TUN source observed; gateway/DNS and no explicit proxy confirmed", request.ClientIPv4)
+	state.RecoveryNotes = fmt.Sprintf("client %s: DHCP, DNS, TUN, and no explicit proxy evidence confirmed", request.ClientIPv4)
 	state.Required = true
 	if err := s.store.SaveRecovery(state); err != nil {
 		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
@@ -1115,17 +1023,17 @@ func (s *Server) handleClientValidationSkip(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if !request.SkipConfirmed {
-		writeError(w, http.StatusUnprocessableEntity, "skip_confirmation_required", "confirm that client DHCP, DNS and TUN evidence will not be validated")
+		writeError(w, http.StatusUnprocessableEntity, "skip_confirmation_required", "confirm that client DHCP, DNS, and TUN evidence will not be validated")
 		return
 	}
 	state, _ := s.store.Recovery()
 	if state.Stage != RecoveryGatewayActive {
-		writeError(w, http.StatusConflict, "recovery_precondition", "gateway must be active before skipping client acceptance")
+		writeError(w, http.StatusConflict, "recovery_precondition", "gateway must be active before skipping client validation")
 		return
 	}
 	state.Stage = RecoveryClientValidationSkipped
 	state.ClientValidationSkipped = true
-	appendRecoveryNote(&state, "client DHCP, DNS and TUN acceptance explicitly skipped by operator; no client-path validation evidence was collected")
+	appendRecoveryNote(&state, "client DHCP, DNS, and TUN acceptance explicitly skipped by operator; no client-path validation evidence was collected")
 	state.Required = true
 	if err := s.store.SaveRecovery(state); err != nil {
 		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
@@ -1143,298 +1051,12 @@ func validateClientAcceptance(cfg config.Config, clientIPv4 string) error {
 	if err != nil {
 		return fmt.Errorf("load leases: %w", err)
 	}
-	matched := false
 	for _, lease := range leases {
 		if lease.IP == clientIPv4 && lease.Online {
-			matched = true
-			break
+			return nil
 		}
 	}
-	if !matched {
-		return fmt.Errorf("no active DHCP lease for %s", clientIPv4)
-	}
-	dnsLog, _ := os.ReadFile(paths.DNSMasqLog)
-	if !bytes.Contains(dnsLog, []byte("DHCPACK")) || !bytes.Contains(dnsLog, []byte(clientIPv4)) {
-		return fmt.Errorf("DHCPACK evidence for %s was not found", clientIPv4)
-	}
-	if !bytes.Contains(dnsLog, []byte("from "+clientIPv4)) {
-		return fmt.Errorf("DNS query evidence from %s was not found", clientIPv4)
-	}
-	mihomoLog, _ := os.ReadFile(paths.MihomoLog)
-	if !bytes.Contains(mihomoLog, []byte(clientIPv4)) {
-		return fmt.Errorf("mihomo TUN source evidence for %s was not found", clientIPv4)
-	}
-	return nil
-}
-
-func (s *Server) handleNetworkDiscovery(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.LoadRuntime(s.configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
-		return
-	}
-	snapshot, err := s.discoverNetwork(r.Context(), r.URL.Query().Get("service"), cfg.Gateway.Interface)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "network_discovery_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, snapshot)
-}
-
-func (s *Server) handleNetworkInterfaces(w http.ResponseWriter, r *http.Request) {
-	interfaces, err := s.listInterfaces(r.Context())
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "network_interfaces_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkInterfacesResponse{SchemaVersion: SchemaVersion, Interfaces: interfaces})
-}
-
-func (s *Server) handleRecoveryPrepare(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.Load(s.configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
-		return
-	}
-	if cfg.Gateway.Mode != config.GatewayModeSameWiFiDHCP {
-		writeError(w, http.StatusConflict, "same_wifi_config_required", "save the same-LAN DHCP takeover topology before preparing recovery")
-		return
-	}
-	var request struct {
-		NetworkService string `json:"network_service"`
-	}
-	if r.ContentLength > 0 {
-		if err := decodeJSON(r, &request, 64<<10); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-	}
-	snapshot, err := s.discoverNetwork(r.Context(), request.NetworkService, cfg.Gateway.Interface)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "network_discovery_failed", err.Error())
-		return
-	}
-	if err := linuxnetwork.ValidateManual(manualConfigForSnapshot(cfg, snapshot)); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "static_config_invalid", fmt.Sprintf("configured gateway IPv4 %s is incompatible with router %s and subnet mask %s: %v", cfg.Gateway.LANIP, snapshot.Router, snapshot.SubnetMask, err))
-		return
-	}
-	state := RecoveryState{SchemaVersion: SchemaVersion, Stage: RecoveryPrepared, Topology: cfg.Gateway.Mode, NetworkService: snapshot.NetworkService, OriginalIPv4: snapshot.IPv4, OriginalRouter: snapshot.Router, Required: true, NetworkSnapshot: &snapshot}
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	if err := s.store.SaveRecoveryCard(state); err != nil {
-		_ = s.store.SaveRecovery(RecoveryState{SchemaVersion: SchemaVersion, Stage: RecoveryIdle, Topology: cfg.Gateway.Mode})
-		writeError(w, http.StatusInternalServerError, "recovery_card_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
-}
-
-func (s *Server) handleApplyStatic(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.Load(s.configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
-		return
-	}
-	state, _ := s.store.Recovery()
-	if state.Stage != RecoveryPrepared || state.NetworkSnapshot == nil {
-		writeError(w, http.StatusConflict, "recovery_precondition", "prepare a recovery snapshot before setting static IPv4")
-		return
-	}
-	snapshot := state.NetworkSnapshot
-	manual := manualConfigForSnapshot(cfg, *snapshot)
-	if err := s.networkRunner.SetManual(r.Context(), s.configPath, manual); err != nil {
-		writeError(w, http.StatusBadGateway, "set_static_failed", err.Error())
-		return
-	}
-	current, err := s.discoverNetwork(r.Context(), manual.NetworkService, manual.Interface)
-	if err == nil {
-		err = linuxnetwork.VerifyManual(current, manual)
-	}
-	if err != nil {
-		message := fmt.Sprintf("gateway host is still not using the expected fixed IPv4 %s. Confirm interface %s through the Linux network manager, then retry. Check result: %v", manual.IPv4, manual.Interface, err)
-		writeError(w, http.StatusBadGateway, "static_ipv4_not_applied", message)
-		return
-	}
-	if err := s.pingRouter(r.Context(), snapshot.Router); err != nil {
-		writeError(w, http.StatusBadGateway, "upstream_unreachable", err.Error())
-		return
-	}
-	state.Stage, state.Required = RecoveryGatewayStatic, true
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
-}
-
-func manualConfigForSnapshot(cfg config.Config, snapshot linuxnetwork.Snapshot) linuxnetwork.ManualConfig {
-	return linuxnetwork.ManualConfig{NetworkService: snapshot.NetworkService, Interface: snapshot.Interface, IPv4: cfg.Gateway.LANIP, SubnetMask: snapshot.SubnetMask, Router: snapshot.Router, DNS: snapshot.DNS}
-}
-
-func (s *Server) handleDHCPProbe(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.LoadRuntime(s.configPath)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "config_invalid", err.Error())
-		return
-	}
-	state, _ := s.store.Recovery()
-	if state.Stage != RecoveryGatewayStatic {
-		writeError(w, http.StatusConflict, "recovery_precondition", "gateway host static IPv4 must be applied before probing for router DHCP")
-		return
-	}
-	servers, err := s.networkRunner.ProbeDHCP(r.Context(), s.configPath, cfg.Gateway.Interface, 3*time.Second)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "dhcp_probe_failed", err.Error())
-		return
-	}
-	if len(servers) > 0 {
-		writeError(w, http.StatusConflict, "competing_dhcp", "DHCP server is still answering: "+strings.Join(servers, ", "))
-		return
-	}
-	state.Stage, state.Required = RecoveryRouterDHCPDisabledConfirmed, true
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state, DHCPServers: []string{}})
-}
-
-func (s *Server) handleRouterRestored(w http.ResponseWriter, r *http.Request) {
-	state, _ := s.store.Recovery()
-	if state.Stage != RecoveryGatewayStopped || state.NetworkSnapshot == nil {
-		writeError(w, http.StatusConflict, "recovery_precondition", "stop OpenSurge before verifying restored router DHCP")
-		return
-	}
-	servers, err := s.networkRunner.ProbeDHCP(r.Context(), s.configPath, state.NetworkSnapshot.Interface, 3*time.Second)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "dhcp_probe_failed", err.Error())
-		return
-	}
-	if len(servers) == 0 {
-		writeError(w, http.StatusConflict, "router_dhcp_missing", "no DHCP server answered after the router was marked restored")
-		return
-	}
-	state.Stage, state.Required = RecoveryRouterDHCPRestored, true
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state, DHCPServers: servers})
-}
-
-func (s *Server) handleManualRecoveryFinish(w http.ResponseWriter, r *http.Request) {
-	request := ManualRecoveryFinishRequest{}
-	if err := decodeJSON(r, &request, 64<<10); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	if !request.RouterDHCPRestoredConfirmed {
-		writeError(w, http.StatusUnprocessableEntity, "manual_confirmation_required", "confirm that router DHCP has been restored before using the manual recovery fallback")
-		return
-	}
-	state, _ := s.store.Recovery()
-	if state.Stage != RecoveryGatewayStopped || state.NetworkSnapshot == nil {
-		writeError(w, http.StatusConflict, "recovery_precondition", "stop OpenSurge before manually finishing network recovery")
-		return
-	}
-	if err := s.networkRunner.SetDHCP(r.Context(), s.configPath, state.NetworkSnapshot.NetworkService); err != nil {
-		writeError(w, http.StatusBadGateway, "restore_dhcp_failed", err.Error())
-		return
-	}
-	appendRecoveryNote(&state, "router DHCP manually confirmed; OFFER evidence skipped; automatic DHCP restoration is owned by the Linux gateway lifecycle")
-	state.Stage, state.Required = RecoveryComplete, false
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
-}
-
-func (s *Server) handleKeepStaticFinish(w http.ResponseWriter, r *http.Request) {
-	request := KeepStaticFinishRequest{}
-	if err := decodeJSON(r, &request, 64<<10); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	if !request.KeepStaticConfirmed {
-		writeError(w, http.StatusUnprocessableEntity, "keep_static_confirmation_required", "confirm that the gateway host will keep its static IPv4 configuration")
-		return
-	}
-	state, _ := s.store.Recovery()
-	if (state.Stage != RecoveryGatewayStopped && state.Stage != RecoveryRouterDHCPRestored) || state.NetworkSnapshot == nil {
-		writeError(w, http.StatusConflict, "recovery_precondition", "stop OpenSurge before finishing the flow with a static gateway IPv4")
-		return
-	}
-	appendRecoveryNote(&state, "post-stop router DHCP verification and automatic DHCP restore explicitly skipped by operator; gateway host kept static IPv4")
-	state.Stage, state.Required = RecoveryCompleteStatic, false
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
-}
-
-func appendRecoveryNote(state *RecoveryState, note string) {
-	if state.RecoveryNotes != "" {
-		state.RecoveryNotes += "; "
-	}
-	state.RecoveryNotes += note
-}
-
-func (s *Server) handleRestoreDHCP(w http.ResponseWriter, r *http.Request) {
-	state, _ := s.store.Recovery()
-	if state.Stage != RecoveryRouterDHCPRestored || state.NetworkSnapshot == nil {
-		writeError(w, http.StatusConflict, "recovery_precondition", "verify restored router DHCP before requesting automatic DHCP restoration")
-		return
-	}
-	if err := s.networkRunner.SetDHCP(r.Context(), s.configPath, state.NetworkSnapshot.NetworkService); err != nil {
-		writeError(w, http.StatusBadGateway, "restore_dhcp_failed", err.Error())
-		return
-	}
-	state.Stage, state.Required = RecoveryComplete, false
-	if err := s.store.SaveRecovery(state); err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_write_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
-}
-
-func allowedRecoveryTransition(from, to string) bool {
-	if to == RecoveryPrepared && (from == RecoveryIdle || from == RecoveryComplete || from == RecoveryCompleteStatic) {
-		return true
-	}
-	if from == RecoveryGatewayActive && (to == RecoveryClientValidated || to == RecoveryClientValidationSkipped) {
-		return true
-	}
-	if (from == RecoveryClientValidated || from == RecoveryClientValidationSkipped) && to == RecoveryGatewayStopped {
-		return true
-	}
-	if (from == RecoveryGatewayStopped || from == RecoveryRouterDHCPRestored) && to == RecoveryCompleteStatic {
-		return true
-	}
-	allowed := map[string]string{
-		RecoveryPrepared:                    RecoveryGatewayStatic,
-		RecoveryGatewayStatic:               RecoveryRouterDHCPDisabledConfirmed,
-		RecoveryRouterDHCPDisabledConfirmed: RecoveryGatewayActive,
-		RecoveryGatewayStopped:              RecoveryRouterDHCPRestored,
-		RecoveryRouterDHCPRestored:          RecoveryComplete,
-	}
-	return allowed[from] == to
-}
-
-func uniqueStrings(values []string) []string {
-	seen := map[string]bool{}
-	result := []string{}
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" && !seen[value] {
-			seen[value] = true
-			result = append(result, value)
-		}
-	}
-	return result
+	return fmt.Errorf("no active DHCP lease for %s", clientIPv4)
 }
 
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
@@ -1538,7 +1160,7 @@ func (s *Server) handleSourceApply(w http.ResponseWriter, r *http.Request) {
 	// engine validation after writing the candidate beside the persistent
 	// geodata cache. Validating here as the UI user would download the same
 	// assets into every source snapshot directory, then validate a second time
-	// in the helper before applying.
+	// in the privileged gateway service before applying.
 	var operation *Operation
 	if gatewayActive {
 		now := time.Now().UTC()

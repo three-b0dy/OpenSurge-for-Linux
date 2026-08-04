@@ -16,11 +16,11 @@ func main() {
 	configPath := flag.String("config", "examples/config.example.yaml", "path to gateway config")
 	addr := flag.String("addr", "", "management listen address; empty uses management.listen from the config")
 	storeDir := flag.String("store", "", "application support directory")
-	helperSocket := flag.String("helper-socket", "/run/opensurge/helper.sock", "privileged helper socket")
+	gatewaySocket := flag.String("gateway-socket", "/run/opensurge/gateway.sock", "privileged Linux gateway socket")
 	direct := flag.Bool("direct-root", false, "run actions directly; requires root and is intended for development")
 	flag.Parse()
 
-	runner := controlapi.ActionRunner(controlapi.HelperClient{SocketPath: *helperSocket})
+	runner := controlapi.GatewayClient(controlapi.UnixGatewayClient{SocketPath: *gatewaySocket})
 	if *direct {
 		runner = controlapi.DirectRunner{}
 	}

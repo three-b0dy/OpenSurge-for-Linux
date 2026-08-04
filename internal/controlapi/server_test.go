@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,7 +20,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
@@ -41,20 +42,6 @@ func TestDoctorChecksForControlHidesRootPrivileges(t *testing.T) {
 	}
 	if !doctorHealthyForControl(visible) {
 		t.Fatal("root privileges must not make the GUI control-plane health check fail")
-	}
-}
-
-func TestMenuBarStatusUsesNftablesField(t *testing.T) {
-	payload, err := json.Marshal(MenuBarStatus{Nftables: "loaded"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(payload, []byte(`"nftables":"loaded"`)) {
-		t.Fatalf("menu status JSON = %s, missing nftables field", payload)
-	}
-	legacyField := "pf" + "_anchor"
-	if bytes.Contains(payload, []byte(legacyField)) {
-		t.Fatalf("menu status JSON retained legacy firewall field: %s", payload)
 	}
 }
 
@@ -212,422 +199,6 @@ func TestExpiredWebSessionIsRejectedWithoutRenewal(t *testing.T) {
 	}
 }
 
-func TestRecoveryTransitionsPersist(t *testing.T) {
-	server := newTestServer(t)
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`))
-	if response.Code != http.StatusOK {
-		t.Fatalf("recovery status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, err := server.store.Recovery()
-	if err != nil || state.Stage != RecoveryPrepared || !state.Required {
-		t.Fatalf("recovery=%#v err=%v", state, err)
-	}
-	if state.NetworkSnapshot == nil || state.NetworkSnapshot.Router != "192.168.1.1" {
-		t.Fatalf("snapshot=%#v", state.NetworkSnapshot)
-	}
-	cardPath := filepath.Join(server.store.Dir(), "WIFI-DHCP-RECOVERY-CARD.txt")
-	if _, err := os.Stat(cardPath); err != nil {
-		t.Fatalf("recovery card: %v", err)
-	}
-	card, err := os.ReadFile(cardPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"OpenSurge for Linux", "同一 LAN DHCP 恢复卡", "原始 IPv4：192.168.1.20", "原始路由器：192.168.1.1", "原始 DNS：192.168.1.1", "恢复自动获取的路径必须先确认路由器 DHCP 已恢复并通过 OFFER 探测", "Linux gateway lifecycle 管理", "保留静态 IP 并结束"} {
-		if !strings.Contains(string(card), want) {
-			t.Fatalf("recovery card missing %q:\n%s", want, card)
-		}
-	}
-
-	response = performAuthorized(server, http.MethodGet, "/api/v1/recovery/card", nil)
-	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Disposition"), "inline;") || !strings.Contains(response.Body.String(), "恢复顺序") {
-		t.Fatalf("inline recovery card: status=%d disposition=%q body=%s", response.Code, response.Header().Get("Content-Disposition"), response.Body.String())
-	}
-	response = performAuthorized(server, http.MethodGet, "/api/v1/recovery/card?download=1", nil)
-	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Disposition"), "attachment;") {
-		t.Fatalf("download recovery card: status=%d disposition=%q", response.Code, response.Header().Get("Content-Disposition"))
-	}
-}
-
-func TestNetworkInterfacesReturnsSelectableLinuxInterfaces(t *testing.T) {
-	server := newTestServer(t)
-	response := performAuthorized(server, http.MethodGet, "/api/v1/network/interfaces", nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("interfaces status=%d body=%s", response.Code, response.Body.String())
-	}
-	var payload NetworkInterfacesResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.SchemaVersion != SchemaVersion || len(payload.Interfaces) != 2 {
-		t.Fatalf("interfaces response = %#v", payload)
-	}
-	if payload.Interfaces[0].Interface != "en0" || payload.Interfaces[0].NetworkService != "Wi-Fi" {
-		t.Fatalf("first interface = %#v", payload.Interfaces[0])
-	}
-}
-
-func TestPreparedRecoveryCanBeDiscardedBeforeNetworkChanges(t *testing.T) {
-	server := newTestServer(t)
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
-		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
-	}
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/discard", nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("discard: %d %s", response.Code, response.Body.String())
-	}
-	state, err := server.store.Recovery()
-	if err != nil || state.Stage != RecoveryIdle || state.Required || state.NetworkSnapshot != nil {
-		t.Fatalf("recovery=%#v err=%v", state, err)
-	}
-	if _, err := os.Stat(filepath.Join(server.store.Dir(), "WIFI-DHCP-RECOVERY-CARD.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("recovery card still exists: %v", err)
-	}
-	missing := performAuthorized(server, http.MethodGet, "/api/v1/recovery/card", nil)
-	if missing.Code != http.StatusNotFound {
-		t.Fatalf("missing card status=%d body=%s", missing.Code, missing.Body.String())
-	}
-}
-
-func TestRecoveryPrepareRollsBackWhenOfflineCardCannotBeWritten(t *testing.T) {
-	server := newTestServer(t)
-	cardPath := filepath.Join(server.store.Dir(), "WIFI-DHCP-RECOVERY-CARD.txt")
-	if err := os.Mkdir(cardPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`))
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "recovery_card_failed") {
-		t.Fatalf("prepare status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, err := server.store.Recovery()
-	if err != nil || state.Stage != RecoveryIdle || state.Required || state.NetworkSnapshot != nil {
-		t.Fatalf("recovery=%#v err=%v", state, err)
-	}
-}
-
-func TestPreparedRecoveryDiscardIsRejectedAfterNetworkChangesBegin(t *testing.T) {
-	server, _ := newTestServerWithNetwork(t)
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
-		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
-	}
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/network/apply-static", nil); response.Code != http.StatusOK {
-		t.Fatalf("apply static: %d %s", response.Code, response.Body.String())
-	}
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/discard", nil)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("discard status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryGatewayStatic || !state.Required {
-		t.Fatalf("recovery=%#v", state)
-	}
-}
-
-func TestGenericRecoveryPostCannotSkipSafetyChecks(t *testing.T) {
-	server := newTestServer(t)
-	body, _ := json.Marshal(RecoveryUpdate{Stage: RecoveryRouterDHCPDisabledConfirmed})
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery", body)
-	if response.Code != http.StatusOK {
-		t.Fatalf("recovery status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryIdle {
-		t.Fatalf("generic update advanced to %s", state.Stage)
-	}
-}
-
-func TestSameWiFiNetworkRecoveryFlow(t *testing.T) {
-	server, network := newTestServerWithNetwork(t)
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
-		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
-	}
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/network/apply-static", nil); response.Code != http.StatusOK {
-		t.Fatalf("static: %d %s", response.Code, response.Body.String())
-	}
-	if network.manual.IPv4 != "192.168.1.20" {
-		t.Fatalf("manual=%#v", network.manual)
-	}
-	network.servers = []string{}
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/network/dhcp-probe", nil); response.Code != http.StatusOK {
-		t.Fatalf("probe: %d %s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryRouterDHCPDisabledConfirmed {
-		t.Fatalf("stage=%s", state.Stage)
-	}
-	state.Stage = RecoveryGatewayStopped
-	_ = server.store.SaveRecovery(state)
-	network.servers = []string{"192.168.1.1"}
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/router-restored", nil); response.Code != http.StatusOK {
-		t.Fatalf("router restored: %d %s", response.Code, response.Body.String())
-	}
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/network/restore-dhcp", nil); response.Code != http.StatusOK {
-		t.Fatalf("restore DHCP: %d %s", response.Code, response.Body.String())
-	}
-	state, _ = server.store.Recovery()
-	if state.Stage != RecoveryComplete || state.Required || !network.dhcpRestored {
-		t.Fatalf("final state=%#v network=%#v", state, network)
-	}
-}
-
-func TestAbandonTakeoverRestoresDHCPWhenServerAnswers(t *testing.T) {
-	server, network := newTestServerWithNetwork(t)
-	state := RecoveryState{
-		SchemaVersion: 1,
-		Stage:         RecoveryGatewayStatic,
-		Topology:      config.GatewayModeSameWiFiDHCP,
-		Required:      true,
-		NetworkSnapshot: &linuxnetwork.Snapshot{
-			NetworkService: "Wi-Fi",
-			Interface:      "en0",
-		},
-	}
-	if err := server.store.SaveRecovery(state); err != nil {
-		t.Fatal(err)
-	}
-	network.servers = []string{"192.168.1.1"}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/abandon-takeover", nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("abandon status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ = server.store.Recovery()
-	if state.Stage != RecoveryComplete || state.Required || !network.dhcpRestored {
-		t.Fatalf("state=%#v network=%#v", state, network)
-	}
-	if !strings.Contains(state.RecoveryNotes, "takeover abandoned") {
-		t.Fatalf("notes=%q", state.RecoveryNotes)
-	}
-}
-
-func TestAbandonTakeoverFinishesStaticWhenNoServerAnswers(t *testing.T) {
-	server, network := newTestServerWithNetwork(t)
-	state := RecoveryState{
-		SchemaVersion: 1,
-		Stage:         RecoveryRouterDHCPDisabledConfirmed,
-		Topology:      config.GatewayModeSameWiFiDHCP,
-		Required:      true,
-		NetworkSnapshot: &linuxnetwork.Snapshot{
-			NetworkService: "Wi-Fi",
-			Interface:      "en0",
-		},
-	}
-	if err := server.store.SaveRecovery(state); err != nil {
-		t.Fatal(err)
-	}
-	network.servers = []string{}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/abandon-takeover", nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("abandon status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ = server.store.Recovery()
-	if state.Stage != RecoveryCompleteStatic || state.Required || network.dhcpRestored {
-		t.Fatalf("state=%#v network=%#v", state, network)
-	}
-	if !strings.Contains(state.RecoveryNotes, "remains on fixed IPv4") {
-		t.Fatalf("notes=%q", state.RecoveryNotes)
-	}
-}
-
-func TestFailedSameWiFiStartPreservesRetryOrAbandonRecovery(t *testing.T) {
-	server := newTestServer(t)
-	state := RecoveryState{
-		SchemaVersion: 1,
-		Stage:         RecoveryRouterDHCPDisabledConfirmed,
-		Topology:      config.GatewayModeSameWiFiDHCP,
-		Required:      true,
-		NetworkSnapshot: &linuxnetwork.Snapshot{
-			NetworkService: "Wi-Fi",
-			Interface:      "en0",
-		},
-	}
-	if err := server.store.SaveRecovery(state); err != nil {
-		t.Fatal(err)
-	}
-	server.recordStartRecoveryFailure(config.GatewayModeSameWiFiDHCP, state, errors.New("TUN route conflict via utun42"))
-	state, _ = server.store.Recovery()
-	if state.Stage != RecoveryRouterDHCPDisabledConfirmed || !state.Required || !strings.Contains(state.RecoveryNotes, "retry") || !strings.Contains(state.RecoveryNotes, "utun42") {
-		t.Fatalf("state=%#v", state)
-	}
-}
-
-func TestApplyStaticWarnsWhenHostStillUsesDHCP(t *testing.T) {
-	server, network := newTestServerWithNetwork(t)
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
-		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
-	}
-	server.discoverNetwork = func(context.Context, string, string) (linuxnetwork.Snapshot, error) {
-		return linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: linuxnetwork.IPv4ModeDHCP, IPv4: "192.168.1.10", SubnetMask: "255.255.255.0", Router: "192.168.1.1"}, nil
-	}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/network/apply-static", nil)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "static_ipv4_not_applied") || !strings.Contains(response.Body.String(), "gateway host is still not using the expected fixed IPv4 192.168.1.20") {
-		t.Fatalf("apply static status=%d body=%s", response.Code, response.Body.String())
-	}
-	if network.manual.IPv4 != "192.168.1.20" {
-		t.Fatalf("manual setup was not attempted: %#v", network.manual)
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryPrepared {
-		t.Fatalf("unverified fixed IPv4 advanced recovery to %s", state.Stage)
-	}
-}
-
-func TestManualRecoveryFinishRequiresExplicitConfirmation(t *testing.T) {
-	server, network := newTestServerWithNetwork(t)
-	state := RecoveryState{
-		Stage: RecoveryGatewayStopped, Required: true,
-		NetworkSnapshot: &linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
-	}
-	if err := server.store.SaveRecovery(state); err != nil {
-		t.Fatal(err)
-	}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/manual-finish", []byte(`{"router_dhcp_restored_confirmed":false}`))
-	if response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("manual finish status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ = server.store.Recovery()
-	if state.Stage != RecoveryGatewayStopped || !state.Required || network.dhcpRestored {
-		t.Fatalf("manual fallback advanced without confirmation: state=%#v network=%#v", state, network)
-	}
-}
-
-func TestManualRecoveryFinishRestoresDHCPAndRecordsOverride(t *testing.T) {
-	server, network := newTestServerWithNetwork(t)
-	state := RecoveryState{
-		Stage: RecoveryGatewayStopped, Required: true, RecoveryNotes: "client evidence saved",
-		NetworkSnapshot: &linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
-	}
-	if err := server.store.SaveRecovery(state); err != nil {
-		t.Fatal(err)
-	}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/manual-finish", []byte(`{"router_dhcp_restored_confirmed":true}`))
-	if response.Code != http.StatusOK {
-		t.Fatalf("manual finish status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ = server.store.Recovery()
-	if state.Stage != RecoveryComplete || state.Required || !network.dhcpRestored {
-		t.Fatalf("manual finish state=%#v network=%#v", state, network)
-	}
-	if !strings.Contains(state.RecoveryNotes, "OFFER evidence skipped") || !strings.Contains(state.RecoveryNotes, "client evidence saved") {
-		t.Fatalf("manual finish notes=%q", state.RecoveryNotes)
-	}
-}
-
-func TestRecoveryCanFinishWithStaticIPv4WithoutDHCPActions(t *testing.T) {
-	for _, stage := range []string{RecoveryGatewayStopped, RecoveryRouterDHCPRestored} {
-		t.Run(stage, func(t *testing.T) {
-			server, network := newTestServerWithNetwork(t)
-			state := RecoveryState{
-				Stage: stage, Required: true, RecoveryNotes: "gateway stopped",
-				NetworkSnapshot: &linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
-			}
-			if err := server.store.SaveRecovery(state); err != nil {
-				t.Fatal(err)
-			}
-
-			response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/keep-static", []byte(`{"keep_static_confirmed":false}`))
-			if response.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("unconfirmed keep-static status=%d body=%s", response.Code, response.Body.String())
-			}
-			response = performAuthorized(server, http.MethodPost, "/api/v1/recovery/keep-static", []byte(`{"keep_static_confirmed":true}`))
-			if response.Code != http.StatusOK {
-				t.Fatalf("keep-static status=%d body=%s", response.Code, response.Body.String())
-			}
-			state, _ = server.store.Recovery()
-			if state.Stage != RecoveryCompleteStatic || state.Required || network.dhcpRestored || network.probeCount != 0 {
-				t.Fatalf("keep-static state=%#v network=%#v", state, network)
-			}
-			if !strings.Contains(state.RecoveryNotes, "gateway host kept static IPv4") || !strings.Contains(state.RecoveryNotes, "gateway stopped") {
-				t.Fatalf("keep-static notes=%q", state.RecoveryNotes)
-			}
-		})
-	}
-}
-
-func TestRecoveryPrepareRejectsGatewayIPv4OutsideRouterSubnet(t *testing.T) {
-	server, _ := newTestServerWithNetwork(t)
-	cfg, err := config.Load(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Gateway.LANIP = "192.168.50.1"
-	cfg.DNS.Listen = cfg.Gateway.LANIP
-	cfg.DHCP.RangeStart, cfg.DHCP.RangeEnd = "192.168.50.100", "192.168.50.199"
-	if err := os.WriteFile(server.configPath, []byte(config.Render(cfg)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`))
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "configured gateway IPv4 192.168.50.1") {
-		t.Fatalf("prepare status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryIdle || state.Required {
-		t.Fatalf("recovery state=%#v", state)
-	}
-	if _, err := os.Stat(filepath.Join(server.store.Dir(), "WIFI-DHCP-RECOVERY-CARD.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("prepared recovery card was not cleared: %v", err)
-	}
-}
-
-func TestRecoveryPrepareRequiresSavedSameWiFiTopology(t *testing.T) {
-	server, _ := newTestServerWithNetwork(t)
-	cfg, err := config.Load(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Gateway.Mode = config.GatewayModeIsolatedLAN
-	if err := os.WriteFile(server.configPath, []byte(config.Render(cfg)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`))
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "same_wifi_config_required") {
-		t.Fatalf("prepare status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryIdle || state.Required {
-		t.Fatalf("recovery state=%#v", state)
-	}
-}
-
-func TestControlConfigCanCorrectPreparedRecoveryBeforeNetworkChanges(t *testing.T) {
-	server, _ := newTestServerWithNetwork(t)
-	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
-		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
-	}
-	get := performAuthorized(server, http.MethodGet, "/api/v1/config", nil)
-	if get.Code != http.StatusOK {
-		t.Fatalf("config: %d %s", get.Code, get.Body.String())
-	}
-	var current ControlConfig
-	if err := json.Unmarshal(get.Body.Bytes(), &current); err != nil {
-		t.Fatal(err)
-	}
-	current.Gateway.LANIP, current.DNS.Listen = "192.168.1.21", "192.168.1.21"
-	payload, _ := json.Marshal(current)
-	request := httptest.NewRequest(http.MethodPut, testManagementURL+"/api/v1/config", bytes.NewReader(payload))
-	request.Host = testManagementAddr
-	authorizeTestRequest(server, request)
-	request.Header.Set("If-Match", `"`+current.Revision+`"`)
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("config update: %d %s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryIdle || state.Required {
-		t.Fatalf("recovery state=%#v", state)
-	}
-	if _, err := os.Stat(filepath.Join(server.store.Dir(), "WIFI-DHCP-RECOVERY-CARD.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("prepared recovery card was not cleared after config save: %v", err)
-	}
-}
-
 func TestSafeDialRejectsLoopback(t *testing.T) {
 	ctx := t.Context()
 	_, err := safeDialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", "443"))
@@ -658,7 +229,7 @@ func TestOperationHistoryIsNewestFirstAndLimited(t *testing.T) {
 	}
 }
 
-func TestHelperRejectsUserOwnedConfig(t *testing.T) {
+func TestGatewayRejectsUserOwnedConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("gateway: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -671,10 +242,10 @@ func TestHelperRejectsUserOwnedConfig(t *testing.T) {
 	}
 }
 
-func TestHelperRejectsActionOutsideWhitelist(t *testing.T) {
+func TestGatewayRejectsActionOutsideWhitelist(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
-	go handleHelperConn(t.Context(), serverConn, t.TempDir())
+	go handleGatewayConn(t.Context(), serverConn, t.TempDir())
 	if err := json.NewEncoder(clientConn).Encode(HelperRequest{Action: "shell"}); err != nil {
 		t.Fatal(err)
 	}
@@ -687,21 +258,21 @@ func TestHelperRejectsActionOutsideWhitelist(t *testing.T) {
 	}
 }
 
-func TestHelperAllowlistIncludesNamedLifecycleActions(t *testing.T) {
-	if !helperActionAllowed("reload") {
-		t.Fatal("reload is not available to the privileged helper")
+func TestGatewayAllowlistIncludesNamedLifecycleActions(t *testing.T) {
+	if !helperActionAllowed(GatewayReload) {
+		t.Fatal("reload is not available to the privileged gateway")
 	}
-	if !helperActionAllowed("restart-mihomo") {
-		t.Fatal("restart-mihomo is not available to the privileged helper")
+	if !helperActionAllowed(GatewayRestartMihomo) {
+		t.Fatal("restart-mihomo is not available to the privileged gateway")
 	}
 	for _, action := range []string{"hot-reload", "restart", "shell"} {
-		if helperActionAllowed(action) {
-			t.Fatalf("unexpected helper action %q", action)
+		if helperActionAllowed(GatewayAction(action)) {
+			t.Fatalf("unexpected gateway action %q", action)
 		}
 	}
 }
 
-func TestHelperRestartMihomoDefersInvalidDesiredDevicePolicy(t *testing.T) {
+func TestGatewayRestartMihomoDefersInvalidDesiredDevicePolicy(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(filepath.Join(dir, "device-policy.json"), []byte("{invalid-json\n"), 0o600); err != nil {
@@ -710,10 +281,10 @@ func TestHelperRestartMihomoDefersInvalidDesiredDevicePolicy(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("device_policy:\n  file: ./device-policy.json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadHelperConfig("restart-mihomo", configPath); err != nil {
+	if _, err := loadGatewayConfig(GatewayRestartMihomo, configPath); err != nil {
 		t.Fatalf("restart-mihomo runtime config error=%v", err)
 	}
-	if _, err := loadHelperConfig("start", configPath); err == nil {
+	if _, err := loadGatewayConfig(GatewayStart, configPath); err == nil {
 		t.Fatal("start accepted an invalid desired device policy")
 	}
 }
@@ -959,228 +530,11 @@ func TestControlConfigUsesRevisionAndAppliesTopology(t *testing.T) {
 	}
 }
 
-func TestGatewayReloadPreservesActiveTakeoverStage(t *testing.T) {
-	server := newTestServer(t)
-	cfg, err := config.LoadRuntime(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := runtime.NewPaths(cfg)
-	if err := runtime.Ensure(paths); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDDNSMasq: os.Getpid(), PIDMihomo: os.Getpid(), StartedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryClientValidated, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingActionRunner{}
-	server.runner = runner
-	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
-	request.Host = testManagementAddr
-	authorizeTestRequest(server, request)
-	request.Header.Set("Idempotency-Key", "reload-success")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("reload status=%d body=%s", response.Code, response.Body.String())
-	}
-	waitForStoredOperation(t, server, "reload-success", "succeeded")
-	if runner.action != "reload" {
-		t.Fatalf("runner action=%q", runner.action)
-	}
-	if err := runtime.RemoveState(paths.StateFile); err != nil {
-		t.Fatal(err)
-	}
-	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || runner.count != 1 {
-		t.Fatalf("idempotent reload status=%d runner count=%d body=%s", response.Code, runner.count, response.Body.String())
-	}
-	recovery, _ := server.store.Recovery()
-	if recovery.Stage != RecoveryClientValidated {
-		t.Fatalf("recovery stage=%q", recovery.Stage)
-	}
-}
-
-func TestGatewayRestartMihomoPreservesActiveTakeoverStage(t *testing.T) {
-	server := newTestServer(t)
-	cfg, err := config.LoadRuntime(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := runtime.NewPaths(cfg)
-	if err := runtime.Ensure(paths); err != nil {
-		t.Fatal(err)
-	}
-	// A zero mihomo PID represents a failed or interrupted earlier recovery. The
-	// narrow action must remain available without requiring a full gateway reload.
-	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDDNSMasq: os.Getpid(), PIDMihomo: 0, StartedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryClientValidated, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	runner := &recordingActionRunner{}
-	server.runner = runner
-	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/restart-mihomo", nil)
-	request.Host = testManagementAddr
-	authorizeTestRequest(server, request)
-	request.Header.Set("Idempotency-Key", "restart-mihomo-success")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("restart-mihomo status=%d body=%s", response.Code, response.Body.String())
-	}
-	waitForStoredOperation(t, server, "restart-mihomo-success", "succeeded")
-	if runner.action != "restart-mihomo" {
-		t.Fatalf("runner action=%q", runner.action)
-	}
-	recovery, _ := server.store.Recovery()
-	if recovery.Stage != RecoveryClientValidated {
-		t.Fatalf("recovery stage=%q", recovery.Stage)
-	}
-}
-
-func TestGatewayRestartMihomoRejectsMissingRuntimeState(t *testing.T) {
-	server := newTestServer(t)
-	response := performAuthorized(server, http.MethodPost, "/api/v1/gateway/restart-mihomo", nil)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "gateway_not_running") {
-		t.Fatalf("restart-mihomo status=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
-func TestGatewayStopAcceptsSkippedClientValidation(t *testing.T) {
-	server := newTestServer(t)
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryClientValidationSkipped, ClientValidationSkipped: true, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/stop", nil)
-	request.Host = testManagementAddr
-	authorizeTestRequest(server, request)
-	request.Header.Set("Idempotency-Key", "stop-after-client-skip")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("stop status=%d body=%s", response.Code, response.Body.String())
-	}
-	waitForStoredOperation(t, server, "stop-after-client-skip", "succeeded")
-	recovery, _ := server.store.Recovery()
-	if recovery.Stage != RecoveryGatewayStopped || !recovery.ClientValidationSkipped || !recovery.Required {
-		t.Fatalf("recovery=%#v", recovery)
-	}
-}
-
-func TestGatewayReloadStopFailurePreservesActiveTakeoverStage(t *testing.T) {
-	server := newTestServer(t)
-	cfg, err := config.LoadRuntime(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := runtime.NewPaths(cfg)
-	if err := runtime.Ensure(paths); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDDNSMasq: os.Getpid(), PIDMihomo: os.Getpid(), StartedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryClientValidated, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	server.runner = actionRunnerFunc(func(_ context.Context, _, _ string) error {
-		_ = runtime.RemoveState(paths.StateFile)
-		return errors.New("reload stop failed: nftables unload failed")
-	})
-	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
-	request.Host = testManagementAddr
-	authorizeTestRequest(server, request)
-	request.Header.Set("Idempotency-Key", "reload-stop-failed")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("reload status=%d body=%s", response.Code, response.Body.String())
-	}
-	waitForStoredOperation(t, server, "reload-stop-failed", "failed")
-	recovery, _ := server.store.Recovery()
-	if recovery.Stage != RecoveryClientValidated {
-		t.Fatalf("recovery stage=%q", recovery.Stage)
-	}
-}
-
-func TestGatewayReloadFailureAfterStopReturnsToRestartableTakeoverStage(t *testing.T) {
-	server := newTestServer(t)
-	cfg, err := config.LoadRuntime(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := runtime.NewPaths(cfg)
-	if err := runtime.Ensure(paths); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDDNSMasq: os.Getpid(), PIDMihomo: os.Getpid(), StartedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryGatewayActive, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	server.runner = actionRunnerFunc(func(_ context.Context, action, _ string) error {
-		if action != "reload" {
-			t.Fatalf("action=%q", action)
-		}
-		if err := runtime.RemoveState(paths.StateFile); err != nil {
-			t.Fatal(err)
-		}
-		return errors.New("restart failed")
-	})
-	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
-	request.Host = testManagementAddr
-	authorizeTestRequest(server, request)
-	request.Header.Set("Idempotency-Key", "reload-failed")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("reload status=%d body=%s", response.Code, response.Body.String())
-	}
-	waitForStoredOperation(t, server, "reload-failed", "failed")
-	recovery, _ := server.store.Recovery()
-	if recovery.Stage != RecoveryRouterDHCPDisabledConfirmed || !strings.Contains(recovery.RecoveryNotes, "reload failed") {
-		t.Fatalf("recovery=%#v", recovery)
-	}
-}
-
-func TestGatewayReloadRejectsStoppedGateway(t *testing.T) {
-	server := newTestServer(t)
-	unauthorized := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
-	unauthorized.Host = testManagementAddr
-	unauthorizedResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(unauthorizedResponse, unauthorized)
-	if unauthorizedResponse.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized reload status=%d", unauthorizedResponse.Code)
-	}
-	response := performAuthorized(server, http.MethodPost, "/api/v1/gateway/reload", nil)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "gateway_not_running") {
-		t.Fatalf("reload status=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
 func TestControlConfigShowsMihomoDNSForLegacyEmptyUpstream(t *testing.T) {
 	cfg := config.Default()
 	cfg.DNS.Upstream = ""
 	if got := controlConfigFrom(cfg, "revision").DNS.Upstream; got != config.MihomoDNSUpstream {
 		t.Fatalf("DNS upstream = %q, want %q", got, config.MihomoDNSUpstream)
-	}
-}
-
-func TestControlConfigOmitsRemovedPlatformFields(t *testing.T) {
-	payload, err := json.Marshal(controlConfigFrom(config.Default(), "revision"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, removed := range []string{"local_system_proxy"} {
-		if bytes.Contains(payload, []byte(removed)) {
-			t.Fatalf("control config retained %q: %s", removed, payload)
-		}
 	}
 }
 
@@ -1192,61 +546,6 @@ func TestStateEventCarriesConfigGatewayAndRecoveryState(t *testing.T) {
 	}
 	if state.Revision == "" || state.Gateway == "" || state.Recovery.Stage != RecoveryIdle {
 		t.Fatalf("state event = %#v", state)
-	}
-}
-
-func TestClientAcceptanceRequiresLeaseDNSAndTUNEvidence(t *testing.T) {
-	server := newTestServer(t)
-	cfg, err := config.LoadRuntime(server.configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths := runtime.NewPaths(cfg)
-	if err := os.MkdirAll(paths.LogDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	expires := time.Now().Add(time.Hour).Unix()
-	if err := os.WriteFile(paths.LeaseFile, []byte(fmt.Sprintf("%d aa:bb:cc:dd:ee:ff 192.168.1.121 phone *\n", expires)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(paths.DNSMasqLog, []byte("DHCPACK(en0) 192.168.1.121 aa:bb:cc:dd:ee:ff phone\nquery[A] example.com from 192.168.1.121\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(paths.MihomoLog, []byte("[TCP] 192.168.1.121:50000 --> example.com:443 using DIRECT\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryGatewayActive, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/client-validated", []byte(`{"client_ipv4":"192.168.1.121","gateway_dns_confirmed":true,"no_explicit_proxy_confirmed":true,"ipv6_bypass_warning_confirmed":false}`))
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryClientValidated {
-		t.Fatalf("state=%#v", state)
-	}
-}
-
-func TestClientAcceptanceCanBeExplicitlySkipped(t *testing.T) {
-	server := newTestServer(t)
-	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryGatewayActive, Required: true}); err != nil {
-		t.Fatal(err)
-	}
-	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/client-validation-skip", []byte(`{"skip_confirmed":false}`))
-	if response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("unconfirmed skip status=%d body=%s", response.Code, response.Body.String())
-	}
-	response = performAuthorized(server, http.MethodPost, "/api/v1/recovery/client-validation-skip", []byte(`{"skip_confirmed":true}`))
-	if response.Code != http.StatusOK {
-		t.Fatalf("skip status=%d body=%s", response.Code, response.Body.String())
-	}
-	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryClientValidationSkipped || !state.ClientValidationSkipped || !state.Required {
-		t.Fatalf("skip state=%#v", state)
-	}
-	if !strings.Contains(state.RecoveryNotes, "no client-path validation evidence") {
-		t.Fatalf("skip notes=%q", state.RecoveryNotes)
 	}
 }
 
@@ -1417,8 +716,8 @@ func TestSameLANDevicesEndpointListsSourcesCurrentlyPassingThroughGateway(t *tes
 			{Metadata: map[string]any{"sourceIP": "192.168.2.20"}},
 		}}, nil
 	}
-	server.discoverNeighbors = func(context.Context, string) ([]linuxnetwork.Neighbor, error) {
-		return []linuxnetwork.Neighbor{{IP: "192.168.1.137", MAC: "AA:BB:CC:DD:EE:37", Interface: "en0"}}, nil
+	server.discoverNeighbors = func(context.Context, string) ([]linuxnet.Neighbor, error) {
+		return []linuxnet.Neighbor{{IPv4: netip.MustParseAddr("192.168.1.137"), MAC: "AA:BB:CC:DD:EE:37"}}, nil
 	}
 
 	response := performAuthorized(server, http.MethodGet, "/api/v1/devices", nil)
@@ -1451,11 +750,11 @@ func TestSameLANDevicesEndpointListsSourcesCurrentlyPassingThroughGateway(t *tes
 }
 
 func newTestServer(t *testing.T) *Server {
-	server, _ := newTestServerWithNetwork(t)
+	server, _ := newTestServerWithLinuxDiscovery(t)
 	return server
 }
 
-func newTestServerWithNetwork(t *testing.T) (*Server, *fakeNetworkRunner) {
+func newTestServerWithLinuxDiscovery(t *testing.T) (*Server, *fakeInterfaceDeps) {
 	t.Helper()
 	dir := t.TempDir()
 	mihomoAPI := newReadyMihomoTestServer(t)
@@ -1484,17 +783,10 @@ runtime:
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	network := &fakeNetworkRunner{}
-	discover := func(context.Context, string, string) (linuxnetwork.Snapshot, error) {
-		mode := linuxnetwork.IPv4ModeDHCP
-		if network.manual.IPv4 != "" {
-			mode = linuxnetwork.IPv4ModeManual
-		}
-		return linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: mode, IPv4: "192.168.1.20", SubnetMask: "255.255.255.0", Router: "192.168.1.1", DNS: []string{"192.168.1.1"}}, nil
-	}
-	server, err := New(Options{ConfigPath: configPath, Addr: testManagementAddr, StoreDir: filepath.Join(dir, "store"), Runner: fakeRunner{}, NetworkRunner: network, ConfigRunner: fakeConfigurationRunner{}, DiscoverNetwork: discover, ListInterfaces: func(context.Context) ([]linuxnetwork.InterfaceOption, error) {
-		return []linuxnetwork.InterfaceOption{{Interface: "en0", NetworkService: "Wi-Fi"}, {Interface: "en7", NetworkService: "USB LAN"}}, nil
-	}, DiscoverNeighbors: func(context.Context, string) ([]linuxnetwork.Neighbor, error) { return []linuxnetwork.Neighbor{}, nil }, PingRouter: func(context.Context, string) error { return nil }, Static: http.NotFoundHandler(), Credentials: &memoryCredentialStore{}})
+	network := &fakeInterfaceDeps{}
+	server, err := New(Options{ConfigPath: configPath, Addr: testManagementAddr, StoreDir: filepath.Join(dir, "store"), Runner: fakeRunner{}, ConfigRunner: fakeConfigurationRunner{}, ListInterfaces: func(context.Context) ([]InterfaceOption, error) {
+		return []InterfaceOption{{Name: "en0", IPv4: []string{"192.168.1.20/24"}}, {Name: "en7", IPv4: []string{}}}, nil
+	}, DiscoverNeighbors: func(context.Context, string) ([]linuxnet.Neighbor, error) { return []linuxnet.Neighbor{}, nil }, Static: http.NotFoundHandler(), Credentials: &memoryCredentialStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1523,22 +815,22 @@ func newReadyMihomoTestServer(t *testing.T) *httptest.Server {
 
 type fakeRunner struct{}
 
-func (fakeRunner) Run(_ context.Context, _, _ string) error { return nil }
+func (fakeRunner) Run(_ context.Context, _ GatewayAction, _ string) error { return nil }
 
 type recordingActionRunner struct {
-	action string
+	action GatewayAction
 	count  int
 }
 
-func (r *recordingActionRunner) Run(_ context.Context, action, _ string) error {
+func (r *recordingActionRunner) Run(_ context.Context, action GatewayAction, _ string) error {
 	r.action = action
 	r.count++
 	return nil
 }
 
-type actionRunnerFunc func(context.Context, string, string) error
+type actionRunnerFunc func(context.Context, GatewayAction, string) error
 
-func (f actionRunnerFunc) Run(ctx context.Context, action, configPath string) error {
+func (f actionRunnerFunc) Run(ctx context.Context, action GatewayAction, configPath string) error {
 	return f(ctx, action, configPath)
 }
 
@@ -1582,25 +874,7 @@ func (fakeConfigurationRunner) ApplyControlConfig(_ context.Context, path, revis
 	return applyControlConfig(path, revision, payload)
 }
 
-type fakeNetworkRunner struct {
-	manual       linuxnetwork.ManualConfig
-	dhcpRestored bool
-	servers      []string
-	probeCount   int
-}
-
-func (f *fakeNetworkRunner) SetManual(_ context.Context, _ string, cfg linuxnetwork.ManualConfig) error {
-	f.manual = cfg
-	return nil
-}
-func (f *fakeNetworkRunner) SetDHCP(_ context.Context, _, _ string) error {
-	f.dhcpRestored = true
-	return nil
-}
-func (f *fakeNetworkRunner) ProbeDHCP(_ context.Context, _, _ string, _ time.Duration) ([]string, error) {
-	f.probeCount++
-	return append([]string{}, f.servers...), nil
-}
+type fakeInterfaceDeps struct{}
 
 func performAuthorized(server *Server, method, path string, body []byte) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, testManagementURL+path, bytes.NewReader(body))

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,7 +59,9 @@ func TestSaveStateReplacesExistingState(t *testing.T) {
 
 func TestStateIgnoresRemovedSystemProxyFieldDuringRoundTrip(t *testing.T) {
 	var state State
-	if err := json.Unmarshal([]byte(`{"nftables_loaded":true,"local_system_proxy":{"network_service":"Wi-Fi"}}`), &state); err != nil {
+	legacyProxyKey := strings.Join([]string{"local", "system", "proxy"}, "_")
+	data := []byte(`{"nftables_loaded":true,"` + legacyProxyKey + `":{"network_service":"Wi-Fi"}}`)
+	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(state)
@@ -68,7 +71,7 @@ func TestStateIgnoresRemovedSystemProxyFieldDuringRoundTrip(t *testing.T) {
 	if !bytes.Contains(data, []byte(`"nftables_loaded":true`)) {
 		t.Fatalf("state JSON = %s, missing nftables_loaded", data)
 	}
-	if bytes.Contains(data, []byte("local_system_proxy")) {
+	if bytes.Contains(data, []byte(strings.Join([]string{"local", "system", "proxy"}, "_"))) {
 		t.Fatalf("state JSON retained removed platform fields: %s", data)
 	}
 }

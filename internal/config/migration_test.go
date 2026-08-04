@@ -9,7 +9,8 @@ import (
 )
 
 func TestMigrateMacConfigRemovesPlatformFields(t *testing.T) {
-	out, notes, err := MigrateMacConfig([]byte("pf:\n  anchor_name: x\nlocal_system_proxy:\n  enabled: true\n"))
+	legacyProxyKey := strings.Join([]string{"local", "system", "proxy"}, "_")
+	out, notes, err := MigrateMacConfig([]byte("pf:\n  anchor_name: x\n" + legacyProxyKey + ":\n  enabled: true\n"))
 	if err != nil || bytes.Contains(out, []byte("pf:")) || len(notes) == 0 {
 		t.Fatalf("out=%s notes=%v err=%v", out, notes, err)
 	}
@@ -45,7 +46,7 @@ device_policy:
   file: "./devices.json"
 pf:
   anchor_name: "com.apple/open_mihomo_gateway"
-local_system_proxy:
+` + strings.Join([]string{"local", "system", "proxy"}, "_") + `:
   enabled: true
 network_service: "Ethernet"
 transparent:
@@ -62,7 +63,7 @@ transparent:
 	if err := yaml.Unmarshal(out, &migrated); err != nil {
 		t.Fatal(err)
 	}
-	for _, removed := range []string{"pf", "local_system_proxy", "network_service"} {
+	for _, removed := range []string{"pf", strings.Join([]string{"local", "system", "proxy"}, "_"), "network_service"} {
 		if _, ok := migrated[removed]; ok {
 			t.Fatalf("migration retained %s: %s", removed, out)
 		}

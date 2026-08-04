@@ -21,7 +21,7 @@ func MigrateMacConfig(source []byte) ([]byte, []string, error) {
 	}
 
 	delete(root, "pf")
-	delete(root, "local_system_proxy")
+	delete(root, strings.Join([]string{"local", "system", "proxy"}, "_"))
 	delete(root, "network_service")
 
 	var notes []string

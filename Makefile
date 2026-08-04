@@ -19,8 +19,7 @@ web-test:
 
 control-build: web-build
 	go build -o bin/opensurge-control ./cmd/opensurge-control
-	go build -o bin/opensurge-helper ./cmd/opensurge-helper
-	go build -o bin/opensurge-install-config ./cmd/opensurge-install-config
+	go build -o bin/opensurge-gateway ./cmd/opensurge-gateway
 
 control-run: control-build
 	./bin/opensurge-control --config examples/config.example.yaml

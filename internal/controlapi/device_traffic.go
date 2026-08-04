@@ -10,7 +10,7 @@ import (
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
@@ -437,11 +437,11 @@ func loadAppliedDevicePolicy(paths runtime.Paths) device.PolicySet {
 	return bundle.Policy
 }
 
-func observedLANDevices(snapshot mihomo.ConnectionsSnapshot, neighbors []linuxnetwork.Neighbor, gatewayIP string, registered ...device.ManagedDevice) []ObservedDevice {
+func observedLANDevices(snapshot mihomo.ConnectionsSnapshot, neighbors []linuxnet.Neighbor, gatewayIP string, registered ...device.ManagedDevice) []ObservedDevice {
 	neighborByIP := make(map[string]string, len(neighbors))
 	ambiguousNeighborIP := make(map[string]bool)
 	for _, neighbor := range neighbors {
-		if ip := normalizeTrafficIP(neighbor.IP); ip != "" {
+		if ip := normalizeTrafficIP(neighbor.IPv4.String()); ip != "" {
 			mac := strings.ToLower(strings.TrimSpace(neighbor.MAC))
 			if mac == "" || ambiguousNeighborIP[ip] {
 				continue

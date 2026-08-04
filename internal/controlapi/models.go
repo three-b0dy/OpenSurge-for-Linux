@@ -6,7 +6,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 )
 
@@ -43,79 +43,30 @@ type Overview struct {
 	Recovery             RecoveryState            `json:"recovery"`
 }
 
-type MenuBarStatus struct {
-	SchemaVersion int      `json:"schema_version"`
-	Revision      string   `json:"revision"`
-	Gateway       string   `json:"gateway"`
-	Topology      string   `json:"topology"`
-	LANIP         string   `json:"lan_ip"`
-	DHCP          string   `json:"dhcp"`
-	Mihomo        string   `json:"mihomo"`
-	TUN           string   `json:"tun"`
-	TUNInterface  string   `json:"tun_interface,omitempty"`
-	TUNError      string   `json:"tun_error,omitempty"`
-	Nftables      string   `json:"nftables"`
-	Forwarding    string   `json:"forwarding"`
-	ClientCount   int      `json:"client_count"`
-	Drift         bool     `json:"drift"`
-	DoctorHealthy bool     `json:"doctor_healthy"`
-	Recovery      bool     `json:"recovery_required"`
-	RecoveryStage string   `json:"recovery_stage,omitempty"`
-	Warnings      []string `json:"warnings"`
-	ErrorCode     string   `json:"error_code,omitempty"`
-}
-
 type RecoveryState struct {
-	SchemaVersion           int                    `json:"schema_version"`
-	Stage                   string                 `json:"stage"`
-	Topology                string                 `json:"topology,omitempty"`
-	NetworkService          string                 `json:"network_service,omitempty"`
-	OriginalIPv4            string                 `json:"original_ipv4,omitempty"`
-	OriginalRouter          string                 `json:"original_router,omitempty"`
-	RecoveryNotes           string                 `json:"recovery_notes,omitempty"`
-	NetworkSnapshot         *linuxnetwork.Snapshot `json:"network_snapshot,omitempty"`
-	ClientValidationSkipped bool                   `json:"client_validation_skipped,omitempty"`
-	Required                bool                   `json:"required"`
-	UpdatedAt               time.Time              `json:"updated_at"`
+	SchemaVersion           int       `json:"schema_version"`
+	Stage                   string    `json:"stage"`
+	Topology                string    `json:"topology,omitempty"`
+	RecoveryNotes           string    `json:"recovery_notes,omitempty"`
+	ClientValidationSkipped bool      `json:"client_validation_skipped,omitempty"`
+	Required                bool      `json:"required"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
-type GatewayPlanRequest struct {
-	NetworkService     string `json:"network_service,omitempty"`
-	RouterDHCPDisabled bool   `json:"router_dhcp_disabled,omitempty"`
+type NetworkInterfacesResponse struct {
+	SchemaVersion int               `json:"schema_version"`
+	Interfaces    []InterfaceOption `json:"interfaces"`
 }
 
-type GatewayPlan struct {
-	SchemaVersion int                   `json:"schema_version"`
-	Revision      string                `json:"revision"`
-	Topology      string                `json:"topology"`
-	Snapshot      linuxnetwork.Snapshot `json:"snapshot"`
-	ProtectedIPv4 []string              `json:"protected_ipv4"`
-	DHCPServers   []string              `json:"dhcp_servers"`
-	Warnings      []string              `json:"warnings"`
-	Blockers      []string              `json:"blockers"`
-}
+type InterfaceOption = linuxnet.InterfaceOption
 
 type NetworkActionResponse struct {
 	SchemaVersion int           `json:"schema_version"`
 	Recovery      RecoveryState `json:"recovery"`
-	DHCPServers   []string      `json:"dhcp_servers,omitempty"`
-}
-
-type NetworkInterfacesResponse struct {
-	SchemaVersion int                            `json:"schema_version"`
-	Interfaces    []linuxnetwork.InterfaceOption `json:"interfaces"`
-}
-
-type ManualRecoveryFinishRequest struct {
-	RouterDHCPRestoredConfirmed bool `json:"router_dhcp_restored_confirmed"`
 }
 
 type ClientValidationSkipRequest struct {
 	SkipConfirmed bool `json:"skip_confirmed"`
-}
-
-type KeepStaticFinishRequest struct {
-	KeepStaticConfirmed bool `json:"keep_static_confirmed"`
 }
 
 type ControlConfig struct {
@@ -160,8 +111,6 @@ type DevicePolicyConfigInput struct {
 
 const (
 	RecoveryIdle                        = "idle"
-	RecoveryPrepared                    = "prepared"
-	RecoveryGatewayStatic               = "gateway_static"
 	RecoveryRouterDHCPDisabledConfirmed = "router_dhcp_disabled_confirmed"
 	RecoveryGatewayActive               = "gateway_active"
 	RecoveryClientValidated             = "client_validated"
@@ -169,15 +118,11 @@ const (
 	RecoveryGatewayStopped              = "gateway_stopped_waiting_router_dhcp"
 	RecoveryRouterDHCPRestored          = "router_dhcp_restored"
 	RecoveryComplete                    = "complete"
-	RecoveryCompleteStatic              = "complete_static"
 )
 
 type RecoveryUpdate struct {
-	Stage          string `json:"stage"`
-	NetworkService string `json:"network_service,omitempty"`
-	OriginalIPv4   string `json:"original_ipv4,omitempty"`
-	OriginalRouter string `json:"original_router,omitempty"`
-	RecoveryNotes  string `json:"recovery_notes,omitempty"`
+	Stage         string `json:"stage"`
+	RecoveryNotes string `json:"recovery_notes,omitempty"`
 }
 
 type ClientAcceptanceRequest struct {

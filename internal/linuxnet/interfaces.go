@@ -10,6 +10,11 @@ type InterfaceInspector interface {
 	Neighbors(context.Context, string) ([]Neighbor, error)
 }
 
+type InterfaceOption struct {
+	Name string   `json:"name"`
+	IPv4 []string `json:"ipv4,omitempty"`
+}
+
 type Neighbor struct {
 	IPv4  netip.Addr
 	MAC   string

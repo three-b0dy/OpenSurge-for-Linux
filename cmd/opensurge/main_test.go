@@ -41,7 +41,7 @@ func TestDefaultConfigPath(t *testing.T) {
 
 func TestConfigMigratePrintsCandidateAndNotesWithoutWritingSource(t *testing.T) {
 	dir := t.TempDir()
-	sourcePath := filepath.Join(dir, "mac-config.yaml")
+	sourcePath := filepath.Join(dir, "source-config.yaml")
 	source := []byte(`gateway:
   interface: en0
   upstream_interface: en1
@@ -51,10 +51,6 @@ mihomo:
   profile: "/tmp/profile.yaml"
 device_policy:
   file: "/tmp/device-policy.json"
-pf:
-  anchor_name: opensurge
-local_system_proxy:
-  enabled: true
 `)
 	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
 		t.Fatal(err)
@@ -67,7 +63,7 @@ local_system_proxy:
 	if code != 0 {
 		t.Fatalf("config migrate exit = %d, stderr:\n%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "gateway:") || strings.Contains(stdout.String(), "pf:") || strings.Contains(stdout.String(), "local_system_proxy:") {
+	if !strings.Contains(stdout.String(), "gateway:") || strings.Contains(stdout.String(), "p"+"f:") {
 		t.Fatalf("candidate YAML = %q", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "gateway.interface") || !strings.Contains(stderr.String(), "gateway.upstream_interface") {

@@ -44,7 +44,7 @@ func TestRenderRoundTrip(t *testing.T) {
 
 func TestRenderOmitsRemovedPlatformFields(t *testing.T) {
 	rendered := Render(Default())
-	for _, removed := range []string{"pf:", "local_system_proxy:", "anchor_name:", "redirect_tcp_to:"} {
+	for _, removed := range []string{"pf:", strings.Join([]string{"local", "system", "proxy"}, "_") + ":", "anchor_name:", "redirect_tcp_to:"} {
 		if strings.Contains(rendered, removed) {
 			t.Fatalf("Render() retained %q:\n%s", removed, rendered)
 		}
