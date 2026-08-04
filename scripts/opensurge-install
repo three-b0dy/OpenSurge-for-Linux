@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+readonly PRODUCTION_ETC_DIR=/etc
+readonly PRODUCTION_STATE_DIR=/var/lib/opensurge
+readonly PRODUCTION_LOG=/var/log/opensurge-install.log
+readonly PRODUCTION_BIN_DIR=/usr/sbin
+readonly PRODUCTION_RUN_DIR=/run
+
+etc_dir=$PRODUCTION_ETC_DIR
+state_dir=$PRODUCTION_STATE_DIR
+installer_log=$PRODUCTION_LOG
+bin_dir=$PRODUCTION_BIN_DIR
+run_dir=$PRODUCTION_RUN_DIR
+installer_root=/
+tty_path=/dev/tty
+
+cleanup() {
+	:
+}
+
+die() {
+	printf 'opensurge-install: %s\n' "$*" >&2
+	exit 2
+}
+
+log() {
+	local message=$1
+	local timestamp
+
+	if test -n "${OPENSURGE_TEST_SECRET:-}"; then
+		message=${message//"$OPENSURGE_TEST_SECRET"/[REDACTED]}
+	fi
+	printf -v timestamp '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+	printf '%s %s\n' "$timestamp" "$message" >>"$installer_log"
+}
+
+has_test_path_override() {
+	test -n "${OPENSURGE_INSTALLER_ROOT+x}" || \
+		test -n "${OPENSURGE_INSTALLER_BIN_DIR+x}" || \
+		test -n "${OPENSURGE_INSTALLER_LOG+x}" || \
+		test -n "${OPENSURGE_INSTALLER_TTY+x}"
+}
+
+configure_paths() {
+	if test "${OPENSURGE_INSTALLER_TEST:-}" != 1; then
+		has_test_path_override && die 'test path overrides require OPENSURGE_INSTALLER_TEST=1'
+		return
+	fi
+
+	installer_root=${OPENSURGE_INSTALLER_ROOT:?OPENSURGE_INSTALLER_ROOT is required in test mode}
+	bin_dir=${OPENSURGE_INSTALLER_BIN_DIR:?OPENSURGE_INSTALLER_BIN_DIR is required in test mode}
+	installer_log=${OPENSURGE_INSTALLER_LOG:?OPENSURGE_INSTALLER_LOG is required in test mode}
+	tty_path=${OPENSURGE_INSTALLER_TTY:?OPENSURGE_INSTALLER_TTY is required in test mode}
+
+	case "$installer_root:$bin_dir:$installer_log:$tty_path" in
+		/*:/*:/*:/*) ;;
+		*) die 'test paths must be absolute' ;;
+	esac
+}
+
+require_option_value() {
+	local option=$1
+	local value=${2:-}
+	test -n "$value" && [[ $value != --* ]] || die "$option requires a value"
+	printf '%s' "$value"
+}
+
+is_ipv4() {
+	local address=$1
+	local octet
+	local -a octets
+
+	IFS=. read -r -a octets <<<"$address"
+	test "${#octets[@]}" -eq 4 || return 1
+	for octet in "${octets[@]}"; do
+		[[ $octet =~ ^[0-9]{1,3}$ ]] || return 1
+		((10#$octet <= 255)) || return 1
+	done
+}
+
+is_ipv4_cidr() {
+	local value=$1
+	local address prefix
+
+	IFS=/ read -r address prefix <<<"$value"
+	test -n "$address" && test -n "$prefix" || return 1
+	[[ $prefix =~ ^[0-9]{1,2}$ ]] || return 1
+	((10#$prefix <= 32)) || return 1
+	is_ipv4 "$address"
+}
+
+is_interface_name() {
+	[[ $1 =~ ^[[:alnum:]][[:alnum:]_.:-]{0,14}$ ]]
+}
+
+validate_isolated_arguments() {
+	test -n "$downstream_interface" && test -n "$upstream_interface" && \
+		test -n "$lan_ip" && test -n "$lan_cidr" || \
+		die 'isolated_lan requires --downstream-interface, --upstream-interface, --lan-ip, and --lan-cidr'
+	is_interface_name "$downstream_interface" || die 'invalid downstream interface'
+	is_interface_name "$upstream_interface" || die 'invalid upstream interface'
+	is_ipv4 "$lan_ip" || die 'invalid LAN IPv4 address'
+	is_ipv4_cidr "$lan_cidr" || die 'invalid LAN CIDR'
+	if test -n "$dhcp_range_start" || test -n "$dhcp_range_end"; then
+		test -n "$dhcp_range_start" && test -n "$dhcp_range_end" || \
+			die 'DHCP range requires both --dhcp-range-start and --dhcp-range-end'
+		is_ipv4 "$dhcp_range_start" || die 'invalid DHCP range start'
+		is_ipv4 "$dhcp_range_end" || die 'invalid DHCP range end'
+	fi
+}
+
+validate_arguments() {
+	case "$mode" in
+		same_lan|same_wifi_dhcp) ;;
+		isolated_lan) validate_isolated_arguments ;;
+		*) die "unsupported mode: $mode" ;;
+	esac
+
+	if test "$mode" != isolated_lan && { test -n "$downstream_interface" || test -n "$upstream_interface" || test -n "$lan_ip" || test -n "$lan_cidr" || test -n "$dhcp_range_start" || test -n "$dhcp_range_end"; }; then
+		die 'topology options require --mode isolated_lan'
+	fi
+
+	test "$package_source_count" -le 1 || die 'choose only one package source'
+	if test -n "$version" && ! [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+		die 'invalid release tag'
+	fi
+}
+
+require_root_and_tty() {
+	test "$EUID" -eq 0 || die 'must be run as root'
+	test -w "$tty_path" || die 'a writable controlling TTY is required'
+}
+
+main() {
+	local version=''
+	local deb=''
+	local mode=same_lan
+	local downstream_interface=''
+	local upstream_interface=''
+	local lan_ip=''
+	local lan_cidr=''
+	local dhcp_range_start=''
+	local dhcp_range_end=''
+	local package_source_count=0
+
+	while test "$#" -gt 0; do
+		case "$1" in
+			--version)
+				version=$(require_option_value "$1" "${2:-}")
+				package_source_count=$((package_source_count + 1))
+				shift 2
+				;;
+			--deb)
+				deb=$(require_option_value "$1" "${2:-}")
+				package_source_count=$((package_source_count + 1))
+				shift 2
+				;;
+			--mode)
+				mode=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--downstream-interface)
+				downstream_interface=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--upstream-interface)
+				upstream_interface=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--lan-ip)
+				lan_ip=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--lan-cidr)
+				lan_cidr=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--dhcp-range-start)
+				dhcp_range_start=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--dhcp-range-end)
+				dhcp_range_end=$(require_option_value "$1" "${2:-}")
+				shift 2
+				;;
+			--)
+				shift
+				test "$#" -eq 0 || die "unexpected positional argument: $1"
+				;;
+			-*) die "unsupported option: $1" ;;
+			*) die "unexpected positional argument: $1" ;;
+		esac
+	done
+
+	validate_arguments
+	configure_paths
+	require_root_and_tty
+	log 'validated installer invocation; package installation is not implemented yet'
+	printf 'OpenSurge installer preflight completed; package installation is not implemented yet.\n' >"$tty_path"
+}
+
+trap cleanup EXIT
+main "$@"

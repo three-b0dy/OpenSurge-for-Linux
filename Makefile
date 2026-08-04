@@ -1,4 +1,4 @@
-.PHONY: test build doctor status policy-control-test
+.PHONY: test build doctor status policy-control-test installer-test
 .PHONY: web-install web-build web-test control-build control-run
 .PHONY: linux-lab-test linux-lab-test-tun linux-real-device-smoke systemd-unit-test linux-release-deps deb linux-ci-check
 
@@ -33,6 +33,9 @@ status:
 policy-control-test:
 	./tests/integration/policy-control.sh
 
+installer-test:
+	bash tests/installer/opensurge-install_test.sh
+
 linux-lab-test:
 	bash tests/linux-lab/lab.sh test
 
@@ -61,4 +64,4 @@ deb:
 linux-ci-check:
 	bash scripts/check-linux-repository.sh
 	bash tests/systemd/units_test.sh
-	bash -n scripts/*.sh packaging/debian/build-deb.sh packaging/debian/DEBIAN/* tests/scripts/*.sh tests/packages/*.sh
+	bash -n scripts/*.sh packaging/debian/build-deb.sh packaging/debian/DEBIAN/* tests/installer/*.sh tests/scripts/*.sh tests/packages/*.sh

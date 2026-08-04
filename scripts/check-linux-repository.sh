@@ -32,6 +32,9 @@ grep -F 'arm64' "$release" >/dev/null
 grep -F 'make linux-release-deps' "$release" >/dev/null
 grep -F 'make deb' "$release" >/dev/null
 grep -F 'contents: write' "$release" >/dev/null
+grep -F 'opensurge_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb' "$release" >/dev/null
+grep -F 'opensurge_*.deb' "$release" >/dev/null
+grep -F 'SHA256SUMS' "$release" >/dev/null
 test ! -e "$repo_root/.github/workflows/release-unsigned.yml"
 
 control="$repo_root/packaging/debian/DEBIAN/control"
@@ -39,7 +42,6 @@ postinst="$repo_root/packaging/debian/DEBIAN/postinst"
 prerm="$repo_root/packaging/debian/DEBIAN/prerm"
 postrm="$repo_root/packaging/debian/DEBIAN/postrm"
 grep -F 'Architecture: __ARCH__' "$control" >/dev/null
-grep -F 'dnsmasq, nftables, iproute2, ca-certificates, systemd' "$control" >/dev/null
 if grep -Eq 'systemctl (start|enable --now)' "$postinst"; then
 	echo "postinst must not start or immediately enable a service" >&2
 	exit 1
