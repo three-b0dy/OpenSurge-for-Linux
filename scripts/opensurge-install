@@ -7,6 +7,7 @@ readonly PRODUCTION_STATE_DIR=/var/lib/opensurge
 readonly PRODUCTION_LOG=/var/log/opensurge-install.log
 readonly PRODUCTION_BIN_DIR=/usr/sbin
 readonly PRODUCTION_RUN_DIR=/run
+readonly RELEASE_REPOSITORY_URL=https://github.com/three-b0dy/OpenSurge-for-Linux
 
 etc_dir=$PRODUCTION_ETC_DIR
 state_dir=$PRODUCTION_STATE_DIR
@@ -15,9 +16,18 @@ bin_dir=$PRODUCTION_BIN_DIR
 run_dir=$PRODUCTION_RUN_DIR
 installer_root=/
 tty_path=/dev/tty
+release_repository_url=$RELEASE_REPOSITORY_URL
+allow_insecure_test_release=0
+download_dir=''
+temporary_policy_path=''
 
 cleanup() {
-	:
+	if test -n "$temporary_policy_path"; then
+		rm -f -- "$temporary_policy_path"
+	fi
+	if test -n "$download_dir"; then
+		rm -rf -- "$download_dir"
+	fi
 }
 
 die() {
@@ -32,20 +42,22 @@ log() {
 	if test -n "${OPENSURGE_TEST_SECRET:-}"; then
 		message=${message//"$OPENSURGE_TEST_SECRET"/[REDACTED]}
 	fi
-	printf -v timestamp '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+	timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 	printf '%s %s\n' "$timestamp" "$message" >>"$installer_log"
 }
 
-has_test_path_override() {
+has_test_override() {
 	test -n "${OPENSURGE_INSTALLER_ROOT+x}" || \
 		test -n "${OPENSURGE_INSTALLER_BIN_DIR+x}" || \
 		test -n "${OPENSURGE_INSTALLER_LOG+x}" || \
-		test -n "${OPENSURGE_INSTALLER_TTY+x}"
+		test -n "${OPENSURGE_INSTALLER_TTY+x}" || \
+		test -n "${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL+x}" || \
+		test -n "${OPENSURGE_INSTALLER_TEST_TRANSFER_PREREQUISITES+x}"
 }
 
 configure_paths() {
 	if test "${OPENSURGE_INSTALLER_TEST:-}" != 1; then
-		has_test_path_override && die 'test path overrides require OPENSURGE_INSTALLER_TEST=1'
+		has_test_override && die 'test path overrides require OPENSURGE_INSTALLER_TEST=1'
 		return
 	fi
 
@@ -58,6 +70,14 @@ configure_paths() {
 		/*:/*:/*:/*) ;;
 		*) die 'test paths must be absolute' ;;
 	esac
+
+	if test -n "${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL:-}"; then
+		release_repository_url=${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL%/}
+		case "$release_repository_url" in
+			http://*|https://*|file://*) allow_insecure_test_release=1 ;;
+			*) die 'invalid test release URL' ;;
+		esac
+	fi
 }
 
 require_option_value() {
@@ -126,16 +146,223 @@ validate_arguments() {
 	if test -n "$version" && ! [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
 		die 'invalid release tag'
 	fi
+	if test -n "$checksums" && test -z "$deb"; then
+		die '--checksums requires --deb'
+	fi
 }
 
 require_root_and_tty() {
-	test "$EUID" -eq 0 || die 'must be run as root'
+	if test "${OPENSURGE_INSTALLER_TEST:-}" != 1; then
+		test "$EUID" -eq 0 || die 'must be run as root'
+	fi
 	test -w "$tty_path" || die 'a writable controlling TTY is required'
+}
+
+canonical_regular_file() {
+	local input=$1
+	local directory
+	local filename
+
+	test -f "$input" && test -r "$input" || die "regular readable file is required: $input"
+	directory=$(cd -P -- "$(dirname -- "$input")" && pwd) || die "cannot canonicalize file: $input"
+	filename=$(basename -- "$input")
+	printf '%s/%s' "$directory" "$filename"
+}
+
+determine_architecture() {
+	local architecture
+
+	architecture=$(dpkg --print-architecture) || die 'cannot determine Debian architecture'
+	case "$architecture" in
+		amd64|arm64) printf '%s' "$architecture" ;;
+		*) die "unsupported Debian architecture: $architecture" ;;
+	esac
+}
+
+prepare_download_dir() {
+	download_dir=$(mktemp -d "${TMPDIR:-/tmp}/opensurge-install.XXXXXX") || die 'cannot create temporary download directory'
+	chmod 0700 "$download_dir" || die 'cannot protect temporary download directory'
+}
+
+transfer_prerequisites_available() {
+	if test "${OPENSURGE_INSTALLER_TEST:-}" = 1 && test -n "${OPENSURGE_INSTALLER_TEST_TRANSFER_PREREQUISITES:-}"; then
+		case "$OPENSURGE_INSTALLER_TEST_TRANSFER_PREREQUISITES" in
+			available) return 0 ;;
+			missing) return 1 ;;
+			*) die 'invalid test transfer-prerequisite state' ;;
+		esac
+	fi
+
+	command -v curl >/dev/null 2>&1 && test -r /etc/ssl/certs/ca-certificates.crt
+}
+
+bootstrap_transfer_prerequisites() {
+	local policy_path="$bin_dir/policy-rc.d"
+
+	if test -e "$policy_path" || test -L "$policy_path"; then
+		log 'existing policy-rc.d controls package service policy during transfer bootstrap'
+	else
+		printf '#!/bin/sh\nexit 101\n' >"$policy_path" || die 'cannot create temporary no-autostart policy'
+		chmod 0755 "$policy_path" || die 'cannot protect temporary no-autostart policy'
+		temporary_policy_path=$policy_path
+	fi
+
+	log 'bootstrapping curl and CA certificates before release retrieval'
+	apt-get update
+	DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends ca-certificates curl
+}
+
+ensure_transfer_prerequisites() {
+	transfer_prerequisites_available || bootstrap_transfer_prerequisites
+}
+
+download_url() {
+	local url=$1
+	local output=$2
+	local effective_url
+
+	if test "$allow_insecure_test_release" -eq 1; then
+		effective_url=$(curl --fail --location --proto '=http,https,file' --tlsv1.2 \
+			--output "$output" --write-out '%{url_effective}' "$url") || die 'download failed'
+	else
+		case "$url" in
+			https://github.com/three-b0dy/OpenSurge-for-Linux/releases/*) ;;
+			*) die 'release downloads must use HTTPS GitHub Release URLs' ;;
+		esac
+		effective_url=$(curl --fail --location --proto '=https' --tlsv1.2 \
+			--output "$output" --write-out '%{url_effective}' "$url") || die 'download failed'
+	fi
+
+	test -n "$effective_url" || die 'release redirect did not resolve'
+	printf '%s' "$effective_url"
+}
+
+release_version_from_tag() {
+	local tag=$1
+	printf '%s' "${tag#v}"
+}
+
+resolve_latest_release_tag() {
+	local latest_url="$release_repository_url/releases/latest"
+	local effective_url
+	local tag_prefix="$release_repository_url/releases/tag/"
+	local latest_tag
+
+	effective_url=$(download_url "$latest_url" "$download_dir/latest-release")
+	case "$effective_url" in
+		"$tag_prefix"*) latest_tag=${effective_url#"$tag_prefix"} ;;
+		*) die 'latest release redirect did not resolve to a release tag' ;;
+	esac
+	if ! [[ $latest_tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+		die 'latest release redirect returned an invalid tag'
+	fi
+	printf '%s' "$latest_tag"
+}
+
+validate_package_filename() {
+	local package=$1
+	local architecture=$2
+	local expected_filename=${3:-}
+	local filename
+
+	filename=$(basename -- "$package")
+	if test -n "$expected_filename"; then
+		test "$filename" = "$expected_filename" || die 'package filename does not match the requested release asset'
+		return
+	fi
+	[[ $filename =~ ^opensurge_[0-9A-Za-z.+:~_-]+_${architecture}\.deb$ ]] || \
+		die 'package filename does not match architecture'
+}
+
+select_checksum_line() {
+	local checksum_file=$1
+	local expected_filename=$2
+	local line
+	local filename
+	local matching_count=0
+	local matching_line=''
+
+	while IFS= read -r line || test -n "$line"; do
+		if [[ ! $line =~ ^([[:xdigit:]]{64})[[:space:]]+(\*)?([^[:space:][:cntrl:]]+)$ ]]; then
+			die 'checksum manifest contains an invalid filename or checksum line'
+		fi
+		filename=${BASH_REMATCH[3]}
+		if test "$filename" = "$expected_filename"; then
+			matching_count=$((matching_count + 1))
+			matching_line=$line
+		fi
+	done <"$checksum_file"
+
+	test "$matching_count" -eq 1 || die 'checksum manifest must contain exactly one matching package entry'
+	printf '%s' "$matching_line"
+}
+
+verify_checksum() {
+	local package=$1
+	local checksum_file=$2
+	local package_directory
+	local package_filename
+	local checksum_line
+
+	package_directory=$(dirname -- "$package")
+	package_filename=$(basename -- "$package")
+	checksum_line=$(select_checksum_line "$checksum_file" "$package_filename")
+	(
+		cd "$package_directory"
+		printf '%s\n' "$checksum_line" | sha256sum --check --status -
+	) || die 'checksum verification failed'
+}
+
+verify_package_architecture() {
+	local package=$1
+	local architecture=$2
+	local package_architecture
+
+	package_architecture=$(dpkg-deb -f "$package" Architecture) || die 'cannot read Debian package architecture'
+	test "$package_architecture" = "$architecture" || die 'Debian package architecture does not match host architecture'
+}
+
+resolve_release_package() {
+	local requested_tag=$1
+	local architecture=$2
+	local tag=$requested_tag
+	local version
+	local expected_filename
+
+	ensure_transfer_prerequisites
+	prepare_download_dir
+	if test -z "$tag"; then
+		tag=$(resolve_latest_release_tag)
+	fi
+	version=$(release_version_from_tag "$tag")
+	expected_filename="opensurge_${version}_${architecture}.deb"
+	checksum_path="$download_dir/SHA256SUMS"
+	package_path="$download_dir/$expected_filename"
+	download_url "$release_repository_url/releases/download/$tag/SHA256SUMS" "$checksum_path" >/dev/null
+	download_url "$release_repository_url/releases/download/$tag/$expected_filename" "$package_path" >/dev/null
+	validate_package_filename "$package_path" "$architecture" "$expected_filename"
+}
+
+resolve_offline_package() {
+	local requested_deb=$1
+	local requested_checksums=$2
+	local architecture=$3
+	local package_directory
+
+	package_path=$(canonical_regular_file "$requested_deb")
+	package_directory=$(dirname -- "$package_path")
+	if test -n "$requested_checksums"; then
+		checksum_path=$(canonical_regular_file "$requested_checksums")
+	else
+		checksum_path=$(canonical_regular_file "$package_directory/SHA256SUMS")
+	fi
+	validate_package_filename "$package_path" "$architecture"
 }
 
 main() {
 	local version=''
 	local deb=''
+	local checksums=''
 	local mode=same_lan
 	local downstream_interface=''
 	local upstream_interface=''
@@ -155,6 +382,10 @@ main() {
 			--deb)
 				deb=$(require_option_value "$1" "${2:-}")
 				package_source_count=$((package_source_count + 1))
+				shift 2
+				;;
+			--checksums)
+				checksums=$(require_option_value "$1" "${2:-}")
 				shift 2
 				;;
 			--mode)
@@ -197,8 +428,20 @@ main() {
 	validate_arguments
 	configure_paths
 	require_root_and_tty
-	log 'validated installer invocation; package installation is not implemented yet'
-	printf 'OpenSurge installer preflight completed; package installation is not implemented yet.\n' >"$tty_path"
+	local architecture
+	local package_path=''
+	local checksum_path=''
+
+	architecture=$(determine_architecture)
+	if test -n "$deb"; then
+		resolve_offline_package "$deb" "$checksums" "$architecture"
+	else
+		resolve_release_package "$version" "$architecture"
+	fi
+	verify_package_architecture "$package_path" "$architecture"
+	verify_checksum "$package_path" "$checksum_path"
+	log "verified release asset $(basename -- "$package_path") for $architecture"
+	printf 'OpenSurge release asset verified; package installation is not implemented yet.\n' >"$tty_path"
 }
 
 trap cleanup EXIT
