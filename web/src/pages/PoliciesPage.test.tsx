@@ -1,16 +1,14 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { LocalRouting, Overview, ProxyHealthSnapshot } from '../types'
+import type { Overview, ProxyHealthSnapshot } from '../types'
 
 vi.mock('../api', () => ({
   api: {
     proxyHealth: vi.fn(),
     testProxyHealth: vi.fn(),
     selectPolicy: vi.fn(),
-    localRouting: vi.fn(),
-    setLocalRouting: vi.fn(),
   },
 }))
 
@@ -35,26 +33,11 @@ const overview = {
   ],
 } as unknown as Overview
 
-function localRouting(mode: LocalRouting['mode'] = 'rule', selected = 'Proxy-A'): LocalRouting {
-  return {
-    schema_version: 1,
-    mode,
-    available_modes: ['rule', 'direct', 'global'],
-    global_group: { name: 'open-surge/mac-global', type: 'Selector', selected, options: ['Proxy-A', 'Proxy-B'] },
-    udp_behavior: mode === 'global' ? 'proxy' : mode === 'direct' ? 'direct' : 'rules',
-    transports: ['tun', 'loopback_explicit_proxy'],
-    new_connections_only: true,
-    consistent: true,
-  }
-}
-
 describe('PoliciesPage', () => {
   beforeEach(() => {
     vi.mocked(api.proxyHealth).mockResolvedValue(health)
     vi.mocked(api.testProxyHealth).mockResolvedValue({ schema_version: 1, test_url: health.test_url, results: [] })
     vi.mocked(api.selectPolicy).mockResolvedValue({} as never)
-    vi.mocked(api.localRouting).mockResolvedValue(localRouting())
-    vi.mocked(api.setLocalRouting).mockImplementation(async (mode, policy) => localRouting(mode, policy ?? 'Proxy-A'))
   })
 
   afterEach(() => { cleanup(); vi.clearAllMocks() })
@@ -84,17 +67,10 @@ describe('PoliciesPage', () => {
     await waitFor(() => expect(api.testProxyHealth).toHaveBeenCalledWith(['Proxy-A', 'Proxy-B']))
   })
 
-  it('keeps the Mac global policy group first and switches it through the local-routing API', async () => {
-    const onChanged = vi.fn(async () => {})
-    render(<PoliciesPage overview={overview} onChanged={onChanged} />)
-
-    const localGroup = await screen.findByRole('heading', { name: '本机全局策略组' })
-    const mainGroup = await screen.findByRole('heading', { name: 'Main' })
-    expect(localGroup.compareDocumentPosition(mainGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-
-    await userEvent.click(screen.getByLabelText('本机全局策略组 当前策略 Proxy-A'))
-    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Proxy-B/ }))
-    await waitFor(() => expect(api.setLocalRouting).toHaveBeenCalledWith('rule', 'Proxy-B'))
-    expect(onChanged).toHaveBeenCalledOnce()
+  it('does not render a host-specific policy control', async () => {
+    render(<PoliciesPage overview={overview} onChanged={vi.fn(async () => {})} />)
+    await screen.findByRole('heading', { name: '策略与节点健康' })
+    await waitFor(() => expect(screen.queryByRole('heading', { name: '本机全局策略组' })).toBeNull())
   })
+
 })

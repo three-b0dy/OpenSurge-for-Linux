@@ -16,7 +16,7 @@ vi.mock('./api', () => ({
       schema_version: 1, revision: 'config-revision',
       gateway: { mode: 'same_wifi_dhcp', interface: 'en0', lan_ip: '192.168.1.20', upstream_interface: 'en0' },
       dhcp: { enabled: true, range_start: '192.168.1.120', range_end: '192.168.1.199', lease_time: '12h', domain: 'lan' },
-      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false }, local_system_proxy: { enabled: false },
+      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false },
       device_policy: { enabled: false, protected_ipv4: [] },
     })),
     networkInterfaces: vi.fn(async () => ({
@@ -49,7 +49,7 @@ vi.mock('./api', () => ({
     confirmRouterRestored: vi.fn(),
     finishRecoveryManually: vi.fn(),
     finishRecoveryKeepingStatic: vi.fn(),
-    restoreMacDHCP: vi.fn(),
+    restoreDHCP: vi.fn(),
     validateClient: vi.fn(),
     skipClientValidation: vi.fn(),
     sources: vi.fn(async () => ({ revision: 'config-revision', sources: [] })),
@@ -61,15 +61,13 @@ vi.mock('./api', () => ({
     deviceTraffic: vi.fn(async () => ({ schema_version: 1, revision: 'r', sampled_at: '2026-07-13T00:00:00Z', scope: 'active_sessions', gateway_local: { ip: '192.168.1.20', mac: '', online: false, active_connections: 0, upload: 0, download: 0, upload_rate: 0, download_rate: 0, identity_source: 'gateway_local', transport: 'tun' }, devices: [], totals: { devices: 0, active_connections: 0, upload: 0, download: 0, upload_rate: 0, download_rate: 0 }, gateway_rates: { upload: 0, download: 0 }, unidentified_device_connections: 0, unclassified_connections: 0, unmatched_connections: 0 })),
     policies: vi.fn(async () => ({ groups: [] })),
     selectPolicy: vi.fn(),
-    localRouting: vi.fn(async () => ({ schema_version: 1, mode: 'rule', available_modes: ['rule', 'direct'], udp_behavior: 'rules', transports: ['tun', 'loopback_explicit_proxy'], new_connections_only: true, consistent: true })),
-    setLocalRouting: vi.fn(),
     devicePolicy: vi.fn(async () => null),
     saveDevicePolicy: vi.fn(),
     selectDevicePolicy: vi.fn(),
     proxyHealth: vi.fn(async () => ({ schema_version: 1, test_url: 'https://www.gstatic.com/generate_204', proxies: [] })),
     testProxyHealth: vi.fn(async () => ({ schema_version: 1, test_url: 'https://www.gstatic.com/generate_204', results: [] })),
-    connectivity: vi.fn(async () => ({ schema_version: 1, source: 'gateway_mihomo', scope: 'local_mac_runtime', rounds: 3, targets: [], results: [] })),
-    testConnectivity: vi.fn(async () => ({ schema_version: 1, source: 'gateway_mihomo', scope: 'local_mac_runtime', rounds: 3, targets: [], results: [] })),
+    connectivity: vi.fn(async () => ({ schema_version: 1, source: 'gateway_mihomo', scope: 'gateway_runtime', rounds: 3, targets: [], results: [] })),
+    testConnectivity: vi.fn(async () => ({ schema_version: 1, source: 'gateway_mihomo', scope: 'gateway_runtime', rounds: 3, targets: [], results: [] })),
     refreshProvider: vi.fn(),
     diagnostics: vi.fn(async () => ({ revision: 'r', connections: { upload_total: 0, download_total: 0, connections: [] }, logs: {}, operations: [], recovery: { stage: 'idle', required: false } })),
   },
@@ -104,7 +102,7 @@ function configFor(mode: ControlConfig['gateway']['mode']): ControlConfig {
     schema_version: 1, revision: 'config-revision',
     gateway: { mode, interface: 'en0', lan_ip: '192.168.1.20', upstream_interface: 'en0' },
     dhcp: { enabled: mode !== 'same_lan', range_start: '192.168.1.120', range_end: '192.168.1.199', lease_time: '12h', domain: 'lan' },
-    dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false }, local_system_proxy: { enabled: false },
+    dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false },
     device_policy: { enabled: false, protected_ipv4: [] },
   }
 }
@@ -164,7 +162,7 @@ describe('OpenSurge app shell', () => {
     render(<App />)
 
     expect(await screen.findByRole('heading', { name: 'Web GUI 与 OpenSurge 的安全连接已过期' })).toBeTruthy()
-    expect(screen.getByText('请点击 macOS 菜单栏中的 OpenSurge 图标，然后选择“打开 OpenSurge 面板”。')).toBeTruthy()
+    expect(screen.getByText('请重新打开 OpenSurge 控制面板并完成会话引导。')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
     await waitFor(() => expect(close).toHaveBeenCalled())
   })
@@ -222,7 +220,7 @@ describe('OpenSurge app shell', () => {
     window.history.replaceState({}, '', '/network')
     vi.mocked(api.overview).mockResolvedValue({
       ...overview,
-      recovery: { ...overview.recovery, stage: 'mac_static', required: true },
+      recovery: { ...overview.recovery, stage: 'gateway_static', required: true },
     })
     render(<App />)
 
@@ -260,11 +258,11 @@ describe('OpenSurge app shell', () => {
     expect(await screen.findByText('旁路由模式已启动。')).toBeTruthy()
   })
 
-  it('offers DHCP takeover abandonment after the Mac becomes static', async () => {
+  it('offers DHCP takeover abandonment after the gateway host becomes static', async () => {
     window.history.replaceState({}, '', '/network')
     vi.mocked(api.overview).mockResolvedValue({
       ...overview,
-      recovery: { ...overview.recovery, stage: 'mac_static', required: true },
+      recovery: { ...overview.recovery, stage: 'gateway_static', required: true },
     })
     vi.mocked(api.abandonTakeover).mockResolvedValue({} as never)
     vi.spyOn(window, 'confirm').mockReturnValue(true)
@@ -301,7 +299,7 @@ describe('OpenSurge app shell', () => {
     render(<App />)
 
     await userEvent.click(await screen.findByRole('button', { name: '停止网关' }))
-    expect((await screen.findByLabelText('Mac 网关 IPv4')).closest('fieldset')?.hasAttribute('disabled')).toBe(true)
+    expect((await screen.findByLabelText('网关主机 IPv4')).closest('fieldset')?.hasAttribute('disabled')).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: '停止旁路由模式' }))
 
     expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('设备可能立即断网'))
@@ -315,7 +313,7 @@ describe('OpenSurge app shell', () => {
     render(<App />)
 
     await userEvent.click(await screen.findByRole('button', { name: '启动网关' }))
-    const gatewayIPv4 = await screen.findByLabelText('Mac 网关 IPv4')
+    const gatewayIPv4 = await screen.findByLabelText('网关主机 IPv4')
     await userEvent.clear(gatewayIPv4)
     await userEvent.type(gatewayIPv4, '192.168.50.1')
 
@@ -339,7 +337,7 @@ describe('OpenSurge app shell', () => {
     })
     render(<App />)
     expect(await screen.findByRole('heading', { name: '活跃设备' })).toBeTruthy()
-    expect(screen.getByText('本机 Mac')).toBeTruthy()
+    expect(screen.getByText('网关主机')).toBeTruthy()
     expect(screen.getByText('网关本机 · TUN')).toBeTruthy()
     expect(await screen.findByText('Apple-TV')).toBeTruthy()
     expect(screen.getAllByText('流媒体组 → 美国-02').length).toBeGreaterThan(0)
@@ -355,7 +353,7 @@ describe('OpenSurge app shell', () => {
     expect(screen.getByText('待识别设备连接')).toBeTruthy()
     expect(screen.getByText('192.168.1.88')).toBeTruthy()
     const trafficRows = screen.getAllByRole('button', { name: /流量趋势/ })
-    expect(trafficRows[0].getAttribute('aria-label')).toContain('本机 Mac 192.168.1.20')
+    expect(trafficRows[0].getAttribute('aria-label')).toContain('网关主机 192.168.1.20')
 
     const deviceButton = screen.getByRole('button', { name: '查看 Apple-TV 192.168.1.88 流量趋势' })
     await userEvent.click(deviceButton)
@@ -376,7 +374,7 @@ describe('OpenSurge app shell', () => {
 
     render(<App />)
 
-    expect(await screen.findByText('本机 Mac')).toBeTruthy()
+    expect(await screen.findByText('网关主机')).toBeTruthy()
     expect(screen.getByText('网关本机 · 显式代理')).toBeTruthy()
   })
 
@@ -400,7 +398,7 @@ describe('OpenSurge app shell', () => {
   })
 
   it('warns on every page only after the recovery flow changes network state', async () => {
-    vi.mocked(api.overview).mockResolvedValue({ ...overview, recovery: { ...overview.recovery, stage: 'mac_static' } })
+    vi.mocked(api.overview).mockResolvedValue({ ...overview, recovery: { ...overview.recovery, stage: 'gateway_static' } })
     render(<App />)
     expect(await screen.findByRole('heading', { name: '全屋网关，一眼可见' })).toBeTruthy()
     expect(screen.getByRole('alert').textContent).toContain('网络恢复尚未完成')
@@ -461,7 +459,7 @@ describe('OpenSurge app shell', () => {
   })
 
   it('shows router shutdown guidance with the detected administration link', async () => {
-    vi.mocked(api.overview).mockResolvedValue({ ...overview, recovery: { ...overview.recovery, stage: 'mac_static' } })
+    vi.mocked(api.overview).mockResolvedValue({ ...overview, recovery: { ...overview.recovery, stage: 'gateway_static' } })
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
     expect(await screen.findByText('关闭路由器 DHCP')).toBeTruthy()
@@ -479,7 +477,7 @@ describe('OpenSurge app shell', () => {
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
     expect(await screen.findByText('恢复路由器 DHCP')).toBeTruthy()
-    expect(screen.getByText(/未能自动获取路由器地址/).textContent).toContain("networksetup -getinfo 'Wi-Fi'")
+    expect(screen.getByText(/未能自动获取路由器地址/).textContent).toContain('Linux network manager')
   })
 
   it('does not let takeover plan blockers lock post-stop recovery actions', async () => {
@@ -487,12 +485,12 @@ describe('OpenSurge app shell', () => {
     vi.mocked(api.gatewayPlan).mockResolvedValue({
       schema_version: 1, revision: 'config-revision', topology: 'same_wifi_dhcp',
       snapshot: { network_service: 'Wi-Fi', interface: 'en0', ipv4: '192.168.1.103', subnet_mask: '255.255.255.0', router: '192.168.1.1', dns: [], ipv6_default: false },
-      protected_ipv4: [], dhcp_servers: [], warnings: [], blockers: ['Mac IPv4 192.168.1.103 differs from configured gateway.lan_ip 192.168.1.20'],
+      protected_ipv4: [], dhcp_servers: [], warnings: [], blockers: ['gateway host IPv4 192.168.1.103 differs from configured gateway.lan_ip 192.168.1.20'],
     })
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
     expect((await screen.findByRole('button', { name: '路由器 DHCP 已恢复，执行 OFFER 探测' })).hasAttribute('disabled')).toBe(false)
-    expect(screen.getByRole('button', { name: '跳过 OFFER 探测并恢复 Mac 自动 DHCP' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '请求 Linux gateway lifecycle 恢复 DHCP' }).hasAttribute('disabled')).toBe(false)
     expect(screen.getByRole('button', { name: '保留静态 IP 并结束' }).hasAttribute('disabled')).toBe(false)
     await userEvent.click(screen.getByRole('button', { name: '路由器 DHCP 已恢复，执行 OFFER 探测' }))
     expect(api.confirmRouterRestored).toHaveBeenCalledOnce()
@@ -503,32 +501,32 @@ describe('OpenSurge app shell', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
-    await userEvent.click(await screen.findByRole('button', { name: '跳过 OFFER 探测并恢复 Mac 自动 DHCP' }))
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('如果路由器 DHCP 实际未恢复，Mac 可能断网'))
+    await userEvent.click(await screen.findByRole('button', { name: '请求 Linux gateway lifecycle 恢复 DHCP' }))
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('当前 foundation 不会伪造成功状态'))
     expect(api.finishRecoveryManually).toHaveBeenCalledOnce()
   })
 
-  it('can finish the post-stop flow while keeping the Mac static', async () => {
+  it('can finish the post-stop flow while keeping the gateway host static', async () => {
     vi.mocked(api.overview).mockResolvedValue({ ...overview, recovery: { ...overview.recovery, stage: 'gateway_stopped_waiting_router_dhcp' } })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
     await userEvent.click(await screen.findByRole('button', { name: '保留静态 IP 并结束' }))
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('不会探测路由器 DHCP，也不会把 Mac 切回自动 DHCP'))
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('不会探测路由器 DHCP，也不会请求自动 DHCP 恢复'))
     expect(api.finishRecoveryKeepingStatic).toHaveBeenCalledOnce()
-    expect(api.restoreMacDHCP).not.toHaveBeenCalled()
+    expect(api.restoreDHCP).not.toHaveBeenCalled()
     expect(api.confirmRouterRestored).not.toHaveBeenCalled()
   })
 
-  it('does not immediately re-run IPv4 discovery after restoring Mac DHCP', async () => {
+  it('does not immediately re-run IPv4 discovery after requesting DHCP restoration', async () => {
     vi.mocked(api.overview).mockResolvedValue({ ...overview, recovery: { ...overview.recovery, stage: 'router_dhcp_restored' } })
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
-    await screen.findByRole('button', { name: '将 Mac 恢复为自动 DHCP' })
+    await screen.findByRole('button', { name: '请求 Linux gateway lifecycle 恢复 DHCP' })
     await waitFor(() => expect(api.gatewayPlan).toHaveBeenCalled())
     vi.mocked(api.gatewayPlan).mockClear()
-    await userEvent.click(screen.getByRole('button', { name: '将 Mac 恢复为自动 DHCP' }))
-    await waitFor(() => expect(api.restoreMacDHCP).toHaveBeenCalled())
+    await userEvent.click(screen.getByRole('button', { name: '请求 Linux gateway lifecycle 恢复 DHCP' }))
+    await waitFor(() => expect(api.restoreDHCP).toHaveBeenCalled())
     expect(api.gatewayPlan).not.toHaveBeenCalled()
     expect(screen.queryByText(/does not expose a complete IPv4 configuration/)).toBeNull()
   })
@@ -548,28 +546,10 @@ describe('OpenSurge app shell', () => {
     await userEvent.click(screen.getByRole('button', { name: '网络设置' }))
     const save = await screen.findByRole('button', { name: '保存网络配置' })
     expect(save.hasAttribute('disabled')).toBe(false)
-    await userEvent.clear(screen.getByLabelText('Mac 网关 IPv4'))
-    await userEvent.type(screen.getByLabelText('Mac 网关 IPv4'), '192.168.1.21')
+    await userEvent.clear(screen.getByLabelText('网关主机 IPv4'))
+    await userEvent.type(screen.getByLabelText('网关主机 IPv4'), '192.168.1.21')
     expect(screen.getByText('网络配置有未保存的修改。先保存配置，再保存恢复资料或继续第 2 步。')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '将 Mac 切换为固定 IPv4' }).hasAttribute('disabled')).toBe(true)
-  })
-
-  it('saves the opt-in macOS HTTP and HTTPS system proxy coordination mode', async () => {
-    vi.mocked(api.saveConfig).mockImplementation(async config => ({ ...config, revision: 'updated-revision' }))
-    render(<App />)
-    await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
-    const systemProxy = await screen.findByRole('checkbox', { name: '同时启用 macOS HTTP/HTTPS 系统代理' })
-    expect(systemProxy.hasAttribute('disabled')).toBe(false)
-    expect(screen.getByText(/SafeDNS、DNS Proxy、内容过滤/)).toBeTruthy()
-    expect(screen.getAllByText('已关闭').length).toBeGreaterThanOrEqual(2)
-    await userEvent.click(systemProxy)
-    expect(systemProxy.closest('label')?.classList.contains('is-on')).toBe(true)
-    const devicePolicy = screen.getByRole('checkbox', { name: '启用每设备策略' })
-    await userEvent.click(devicePolicy)
-    expect(devicePolicy.closest('label')?.classList.contains('is-on')).toBe(true)
-    expect(screen.getAllByText('已开启').length).toBeGreaterThanOrEqual(2)
-    await userEvent.click(screen.getByRole('button', { name: '保存网络配置' }))
-    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith(expect.objectContaining({ local_system_proxy: { enabled: true }, device_policy: { enabled: true, protected_ipv4: [] } })))
+    expect(screen.getByRole('button', { name: '将网关主机切换为固定 IPv4' }).hasAttribute('disabled')).toBe(true)
   })
 
   it('shows the fixed IPv4 readback warning during recovery step 2', async () => {
@@ -578,13 +558,13 @@ describe('OpenSurge app shell', () => {
       snapshot: { network_service: 'Wi-Fi', interface: 'en0', ipv4: '192.168.1.20', subnet_mask: '255.255.255.0', router: '192.168.1.1', dns: ['192.168.1.1'], ipv6_default: false },
       protected_ipv4: ['192.168.1.1', '192.168.1.20'], dhcp_servers: [], warnings: [], blockers: [],
     })
-    vi.mocked(api.applyStatic).mockRejectedValue(new RequestError(502, 'static_ipv4_not_applied', 'Mac 仍未使用预期的固定 IPv4 192.168.1.20。请在系统设置中确认“配置 IPv4”为“手动”后重试。'))
+    vi.mocked(api.applyStatic).mockRejectedValue(new RequestError(502, 'static_ipv4_not_applied', 'gateway host is still not using the expected fixed IPv4 192.168.1.20. Confirm the Linux interface and retry.'))
     render(<App />)
     await userEvent.click(await screen.findByRole('button', { name: '网络设置' }))
-    await userEvent.click(await screen.findByRole('button', { name: '将 Mac 切换为固定 IPv4' }))
+    await userEvent.click(await screen.findByRole('button', { name: '将网关主机切换为固定 IPv4' }))
 
     const warning = await screen.findByRole('alert')
-    expect(warning.textContent).toContain('Mac 仍未使用预期的固定 IPv4 192.168.1.20')
+    expect(warning.textContent).toContain('gateway host is still not using the expected fixed IPv4 192.168.1.20')
     expect(api.applyStatic).toHaveBeenCalledOnce()
   })
 
@@ -789,7 +769,7 @@ describe('OpenSurge app shell', () => {
       schema_version: 1, revision: 'config-revision',
       gateway: { mode: 'same_wifi_dhcp', interface: 'en0', lan_ip: '192.168.1.20', upstream_interface: 'en0' },
       dhcp: { enabled: true, range_start: '192.168.1.120', range_end: '192.168.1.199', lease_time: '12h', domain: 'lan' },
-      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false }, local_system_proxy: { enabled: false },
+      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false },
       device_policy: { enabled: true, protected_ipv4: [] },
     })
     vi.mocked(api.devicePolicy).mockResolvedValue({ schema_version: 1, revision: 'policy-r', policy: { devices: [], profiles: [], templates: [], rule_sets: [] } })
@@ -809,7 +789,7 @@ describe('OpenSurge app shell', () => {
       schema_version: 1, revision: 'config-revision',
       gateway: { mode: 'same_wifi_dhcp', interface: 'en0', lan_ip: '192.168.1.20', upstream_interface: 'en0' },
       dhcp: { enabled: true, range_start: '192.168.1.120', range_end: '192.168.1.199', lease_time: '12h', domain: 'lan' },
-      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false }, local_system_proxy: { enabled: false },
+      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false },
       device_policy: { enabled: true, protected_ipv4: [] },
     })
     vi.mocked(api.devicePolicy).mockResolvedValue({ schema_version: 1, revision: 'policy-r', policy: { devices: [], profiles: [{ id: 'home', default_policies: ['DIRECT'], rules: [] }], templates: [], rule_sets: [] } })
@@ -834,7 +814,7 @@ describe('OpenSurge app shell', () => {
       schema_version: 1, revision: 'config-revision',
       gateway: { mode: 'same_wifi_dhcp', interface: 'en0', lan_ip: '192.168.1.20', upstream_interface: 'en0' },
       dhcp: { enabled: true, range_start: '192.168.1.120', range_end: '192.168.1.199', lease_time: '12h', domain: 'lan' },
-      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false }, local_system_proxy: { enabled: false },
+      dns: { listen: '192.168.1.20', upstream: '1.1.1.1' }, transparent: { mode: 'tun', strict_route: false },
       device_policy: { enabled: true, protected_ipv4: [] },
     })
     vi.mocked(api.devicePolicy).mockResolvedValue({ schema_version: 1, revision: 'policy-r', policy: { devices: [], profiles: [], templates: [], rule_sets: [] } })

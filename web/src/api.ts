@@ -1,4 +1,4 @@
-import type { APIError, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, LocalRouting, LocalRoutingMode, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
+import type { APIError, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
 
 export class RequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -40,7 +40,7 @@ export const api = {
   confirmRouterRestored: () => request('/api/v1/recovery/router-restored', { method: 'POST' }),
   finishRecoveryManually: () => request('/api/v1/recovery/manual-finish', { method: 'POST', body: JSON.stringify({ router_dhcp_restored_confirmed: true }) }),
   finishRecoveryKeepingStatic: () => request('/api/v1/recovery/keep-static', { method: 'POST', body: JSON.stringify({ keep_static_confirmed: true }) }),
-  restoreMacDHCP: () => request('/api/v1/network/restore-dhcp', { method: 'POST' }),
+  restoreDHCP: () => request('/api/v1/network/restore-dhcp', { method: 'POST' }),
   validateClient: (clientIPv4: string, ipv6Acknowledged: boolean) => request('/api/v1/recovery/client-validated', { method: 'POST', body: JSON.stringify({ client_ipv4: clientIPv4, gateway_dns_confirmed: true, no_explicit_proxy_confirmed: true, ipv6_bypass_warning_confirmed: ipv6Acknowledged }) }),
   skipClientValidation: () => request('/api/v1/recovery/client-validation-skip', { method: 'POST', body: JSON.stringify({ skip_confirmed: true }) }),
   sources: () => request<{ revision: string; sources: Source[] }>('/api/v1/sources'),
@@ -60,8 +60,6 @@ export const api = {
   saveDevicePolicy: (policy: PolicySet, revision: string) => request<DevicePolicyDocument>('/api/v1/device-policy', { method: 'PUT', headers: { 'If-Match': `"${revision}"` }, body: JSON.stringify(policy) }),
   policies: () => request<{ groups: ProxyGroup[] }>('/api/v1/policies'),
   selectPolicy: (group: string, policy: string) => request(`/api/v1/policies/${encodeURIComponent(group)}/selection`, { method: 'POST', body: JSON.stringify({ policy }) }),
-  localRouting: () => request<LocalRouting>('/api/v1/local-routing'),
-  setLocalRouting: (mode: LocalRoutingMode, globalPolicy?: string) => request<LocalRouting>('/api/v1/local-routing', { method: 'POST', body: JSON.stringify({ mode, global_policy: globalPolicy }) }),
   selectDevicePolicy: (device: string, slot: string, policy: string) => request(`/api/v1/devices/${encodeURIComponent(device)}/selectors/${encodeURIComponent(slot)}`, { method: 'POST', body: JSON.stringify({ policy }) }),
   proxyHealth: () => request<ProxyHealthSnapshot>('/api/v1/proxy-health'),
   testProxyHealth: (names: string[]) => request<ProxyHealthTestResponse>('/api/v1/proxy-health/tests', { method: 'POST', body: JSON.stringify({ names }) }),

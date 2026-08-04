@@ -1,164 +1,33 @@
-# OpenSurge for Mac App 使用指南
+# OpenSurge for Linux 使用指南
 
-**简体中文** · [English](app-user-guide.md)
+OpenSurge 是面向 Debian 12+、Ubuntu 22.04+、amd64 和 arm64 的 Linux 网关控制面。
+当前阶段提供 CLI、配置校验、候选迁移、Web GUI 基础、mihomo 渲染和 Linux 网络原语；
+尚未提供可安装的网关服务包。
 
-本指南面向通过安装包使用 OpenSurge for Mac 的普通用户，介绍从安装、导入订阅到启动
-网关和安全恢复网络的基本流程。CLI、开发构建和高级配置不在本文展开。
+## 初始配置
 
-![OpenSurge for Mac 总览](images/opensurge-dashboard.png)
+从 `examples/config.example.yaml` 开始，选择一种模式：
 
-## 安装与打开
+- `isolated_lan` 需要第二块有线网卡或 VLAN 作为下游网络。
+- `same_lan` 使用共享接口，并要求关闭 OpenSurge DHCP。
+- `same_wifi_dhcp` 需要明确确认上游路由器 DHCP 已关闭。
 
-1. 从 [GitHub Releases](https://github.com/YTwsy/OpenSurge-for-Mac/releases) 下载适合
-   当前 Mac 的安装包：Apple Silicon 使用 `arm64-unsigned.pkg`，Intel Mac 使用
-   `x86_64-unsigned.pkg`。
-2. 双击安装包。如果 macOS 阻止打开，请前往**系统设置 → 隐私与安全性**，对这个安装包
-   选择**仍要打开**。不需要全局关闭 Gatekeeper。
-3. 安装完成后，从 `/Applications` 打开 **OpenSurge**；App 会直接展开菜单栏状态面板。
-4. 之后既可以再次打开 **OpenSurge**，也可以点击菜单栏图标展开同一面板；选择
-   **打开 OpenSurge 面板**进入 Web GUI。
+当前网关数据面支持 IPv4。透明代理唯一使用 mihomo TUN，`redir_port` 必须保持为
+零。`isolated_lan` 会丢弃下游 IPv6 forwarding，其余模式会提示 IPv6 尚未由本阶段管理。
 
-<img width="402" height="612" alt="截屏2026-07-27 23 21 08" src="https://github.com/user-attachments/assets/53ec001c-6755-4a67-8482-fb1fa50b072a" />
+## 校验与迁移
 
-菜单栏 App 用于显示状态、恢复提醒和打开 Web GUI；订阅、网络、设备和策略操作都在
-Web GUI 中完成。
+```sh
+opensurge config validate --config /etc/opensurge/config.yaml
+opensurge config migrate --config /path/to/source.yaml > candidate.yaml
+```
 
-菜单栏状态面板会自动检查一次最新稳定版，也可以点击**检查更新**手动刷新。发现新版本
-后，选择**打开下载页**会进入该版本的 GitHub Release；App 不会自行下载或安装 PKG，
-仍按上面的安装步骤选择对应架构的安装包。升级不需要先卸载，现有配置和数据会保留。
-预发行构建会显示完整的 `rc.N` 版本：不会提示降级到更旧的稳定版，但同基础版本的正式版
-发布后会显示更新。
+迁移命令只读取源文件，把候选 YAML 写到 stdout，把映射提示写到 stderr；不会写入或覆盖
+任何文件，也不会改变上游路由器 DHCP。使用前必须人工映射下游接口、上游接口和非回环
+管理监听地址，然后运行配置校验。
 
-## 首次使用
+## 网络职责
 
-### 1. 导入订阅
-
-进入**来源**，导入 HTTPS 订阅地址或本地 mihomo YAML 文件：
-
-1. 点击**导入为草稿**。
-2. 确认页面显示结构校验通过。
-3. 网关尚未运行时，点击**设为下次启动版本**；网关运行时，可以选择**应用并重载网关**。
-
-导入草稿不会立即改变当前网络。运行中应用新订阅会先校验完整配置，并短暂重启网关服务。
-
-### 2. 选择网络模式
-
-进入**网络设置**，根据使用场景选择模式：
-
-| 模式 | 适合场景 | 主要操作 |
-| --- | --- | --- |
-| 局域网 DHCP 接管 | 让同一家庭 LAN 的设备自动使用 OpenSurge | 需要按流程关闭和恢复路由器 DHCP |
-| 旁路由模式 | 先让少量设备试用 | 路由器 DHCP 保持开启，设备手工把网关和 DNS 指向 Mac |
-| 独立下游 LAN | 独立 AP、SSID 或 VLAN | Mac 为独立下游网络提供网关服务 |
-
-填写下游接口、上游接口、Mac 网关 IPv4、DHCP 地址池和上游 DNS。透明代理建议保持
-**mihomo TUN**；需要为不同设备设置出口时，启用**每设备策略**。完成后点击
-**保存网络配置**。
-
-旁路由模式登记设备时只需填写固定 IPv4，MAC 是可选身份信息。若以后切换到 DHCP
-模式，OpenSurge 会先让你确认当前能够观察到的 MAC；仍无法取得 MAC 的设备资料和规则会
-保留，但专属策略暂停，补充 MAC 后恢复。已有设备全都登记了 MAC 时不会出现迁移提示。
-
-如果 SafeDNS、DNS Proxy、内容过滤或其他 Network Extension 让 Mac 本机在只开 TUN 时
-出现 DNS/访问异常，可以在同一表单启用**Mac 本机系统代理协同**。OpenSurge 会在网关
-启动后把当前上游网络服务的 HTTP/HTTPS 系统代理指向本机 mihomo mixed-port，并在停止、
-启动回滚或 mihomo 重启失败时恢复启动前状态。这个开关默认关闭，只适用于 TUN 模式和
-遵循系统代理的 Mac 应用；它不替代 TUN，也不改变下游设备。已有 HTTP/HTTPS 代理、PAC
-或自动代理发现时，OpenSurge 会拒绝启动，避免覆盖现有设置。
-
-更完整的拓扑说明见[使用方式与结构图](usage-topologies.zh-CN.md)。
-
-### 3. 启动 OpenSurge
-
-使用**局域网 DHCP 接管**时，启停操作位于网络恢复状态机中。请依次完成：
-
-1. 保存网络快照与离线恢复卡。
-2. 将 Mac 切换为固定 IPv4。
-3. 按页面提示关闭路由器 DHCP。
-4. 返回 OpenSurge，执行 DHCP OFFER 探测。
-5. 探测通过后，点击**启动 OpenSurge**。
-6. 让客户端重新连接网络，并在页面中完成 DHCP、DNS 与 TUN 验收。
-
-不要在关闭路由器 DHCP 后跳过页面直接退出。OpenSurge 会保留恢复状态，直到网络恢复流程
-真正完成。
-
-如果 Mac 已经使用固定 IPv4，但你决定不再继续接管，可以点击**放弃 DHCP 接管**。
-OpenSurge 会先探测当前网络是否已有 DHCP server：若已恢复，就把 Mac 切回自动 DHCP
-并结束流程；若仍没有 DHCP OFFER，则保留 Mac 的固定 IPv4 并以“保留静态 IP”结束，
-不会声称路由器 DHCP 或其他设备的自动获取能力已经恢复。两种结果都会解除恢复锁定；
-网关停止后，菜单栏中的**退出 OpenSurge**会重新可用。
-
-## 日常使用
-
-- **总览**：查看网关状态、当前配置、活跃设备和最近 60 秒流量趋势。
-- **来源**：刷新订阅并查看新旧版本差异。刷新只生成草稿，需要再次应用。
-- **设备**：切换 Mac 本机的规则 / 全局 / 直连，并为下游设备选择跟随网关规则或
-  独立设备出口。这两类控制互不影响。
-- **策略**：检测节点健康并切换已经应用的 Selector；切换会即时生效。
-- **连通性**：检查当前 applied 配置与 Mac 本机模式访问真实服务时的延迟、命中规则
-  和出口链；它不代表下游设备路径。
-- **诊断**：查看近期操作、连接、Provider 和脱敏日志。
-
-设备页中的 Mac 本机模式只影响经 TUN 或本机显式代理进入 OpenSurge 的新连接；它本身
-不会修改 macOS 系统代理，也不会改变下游设备。系统代理只由网络设置中的独立兼容开关
-管理。绿色**即时生效**操作只切换已经应用的出口；
-修改设备身份、候选或规则后，需要先保存，再按提示重载网关。详细边界见
-[Mac 本机流量模式](local-mac-routing.zh-CN.md)。
-
-节点健康和连通性检测由网关 Mac 发起。它们可以帮助判断代理配置是否工作，但不能代替
-某台下游设备的 DHCP、DNS 和 TUN 验收。
-
-## 停止与恢复网络
-
-使用**局域网 DHCP 接管**时，停止网关也是恢复状态机的一部分：
-
-1. 完成客户端验收，或明确选择跳过验收。
-2. 点击**停止 OpenSurge**。
-3. 按页面提示重新开启路由器 DHCP。
-4. 返回 OpenSurge，执行 DHCP OFFER 探测。
-5. 将 Mac 恢复为自动 DHCP，或明确选择保留静态 IPv4。
-6. 确认恢复流程已经完成后，再退出 OpenSurge。
-
-菜单栏中的两个退出入口含义不同：
-
-- **只退出菜单栏 App**：只关闭菜单栏图标，不停止网关和后台服务。
-- **退出 OpenSurge**：仅在网关已经停止且没有待处理恢复时可用，同时退出菜单栏 App 和
-  用户级 Control Service。
-
-## 卸载
-
-在菜单栏状态面板底部选择**卸载 OpenSurge…**。只要网关状态为**已停止**就可以继续；
-DHCP 接管恢复提示和系统原本已经开启的 IPv4 forwarding 不会阻止卸载，也不会被卸载器
-擅自修改。
-
-确认窗口提供两个选择：
-
-- **保留数据并卸载**：移除 OpenSurge App、Control Service 和 root Helper，保留配置、
-  订阅凭据与策略数据，方便以后重新安装。
-- **彻底卸载**：同时删除配置、订阅凭据、运行记录和日志。
-
-macOS 会显示管理员授权窗口。如果网关仍在运行，卸载入口不可用；请先进入
-**网络设置**停止网关，再返回菜单栏执行卸载。升级新版本不需要先卸载，直接运行新版
-安装包即可保留现有数据。
-
-## 常见问题
-
-**Web GUI 无法打开**
-
-在菜单栏中点击**重新连接**。这个操作只重启用户级 Control Service，不会停止正在运行的
-网关数据面。
-
-**无法继续启动流程**
-
-查看网络设置页显示的 blocker，确认接口、Mac 网关 IPv4、受保护地址和 DHCP 地址池没有
-冲突，并确认所有修改已经保存。如果实际启动报告 TUN 路由冲突，请根据错误中的接口/
-网关信息关闭对应客户端的 Exit Node 或全局 TUN 模式，再重试启动。
-
-**设备没有显示流量**
-
-先让设备产生新的网络访问，再刷新总览。页面展示的是当前活跃会话和最近 60 秒趋势，不是
-长期流量历史。
-
-**一直显示网络恢复尚未完成**
-
-进入**网络设置**继续恢复状态机。网关停止并不等于路由器 DHCP 和 Mac 网络设置已经恢复。
+Linux 方向使用 iproute2 检查接口，使用 nftables 管理 OpenSurge 自己的命名防火墙表，
+并以 systemd 作为后续服务生命周期方向。当前命令不宣称已经提供 DHCP、DNS、转发、NAT、
+回滚或真实主机网络结果；这些能力等待 Linux lifecycle 与实验室门禁实现。

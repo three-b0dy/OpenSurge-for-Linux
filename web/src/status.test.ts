@@ -13,7 +13,7 @@ describe('status labels', () => {
 
   it('distinguishes a saved recovery card from changed network state', () => {
     expect(needsNetworkRecoveryWarning('prepared')).toBe(false)
-    expect(needsNetworkRecoveryWarning('mac_static')).toBe(true)
+    expect(needsNetworkRecoveryWarning('gateway_static')).toBe(true)
   })
 
   it('treats active takeover as steady state and post-stop as recovery', () => {

@@ -23,7 +23,7 @@
   </g>
   <g filter="url(#shadow)">
     <rect x="326" y="78" width="190" height="176" rx="24" fill="#e3f4ec" stroke="#42a97f" stroke-width="1.75"/>
-    <text class="title" x="421" y="110">Mac / OpenSurge</text>
+    <text class="title" x="421" y="110">Linux gateway / OpenSurge</text>
     <rect x="346" y="132" width="150" height="47" rx="12" fill="#f7fcf9" stroke="#69b994" stroke-width="1"/>
     <text class="module" x="421" y="153">DNS</text><text class="small" x="421" y="169">不发 DHCP</text>
     <rect x="346" y="190" width="150" height="47" rx="12" fill="#f7fcf9" stroke="#69b994" stroke-width="1"/>
@@ -32,7 +32,7 @@
   <g filter="url(#shadow)">
     <rect x="558" y="94" width="136" height="144" rx="22" fill="#fffaf0" stroke="#c9973f" stroke-width="1.5"/>
     <text class="title" x="626" y="128">部分设备</text>
-    <text class="small" x="626" y="156">固定 IPv4</text><text class="small" x="626" y="178">网关 / DNS → Mac</text>
+    <text class="small" x="626" y="156">固定 IPv4</text><text class="small" x="626" y="178">网关 / DNS → Linux gateway</text>
     <rect x="580" y="195" width="92" height="26" rx="13" fill="#fff" stroke="#ddc386"/>
     <text class="micro" x="626" y="213">手工设置</text>
   </g>

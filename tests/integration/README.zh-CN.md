@@ -1,40 +1,15 @@
 # 集成测试
 
-简体中文 | [English](README.md)
-
-自动化虚拟 LAN lab 位于 `tests/lab`。它使用真实的 macOS `pf`、`dnsmasq`
-和 `mihomo` 实现，并配合一次性的 Lima Linux 客户端。默认循环覆盖 NAT、
-DHCP/DNS、直连 HTTPS，以及通过 mihomo `mixed-port` 的显式 HTTPS。macOS
-当前支持的透明代理路径是 TUN，因为当前 mihomo Darwin redir listener 不受支持。
-
-CI 当前只运行快速单元测试门禁。对任何可能改变真实流量或主机网络状态的改动，
-请在本地、夜间任务或手动 macOS 门禁中运行 `make lab-test`。
-
-策略组控制面改动可以先运行一个更小的非 root 集成门禁：
+策略控制面门禁会在真实 mihomo external controller 上验证可复用的 Linux 控制面契约，
+但不宣称完整网关网络路径已经实现：
 
 ```sh
 make policy-control-test
 ```
 
-这个 gate 会在 `runtime/integration/` 下写入 imported mihomo fixture，渲染
-OpenSurge 的 gateway overlay，启动真实 mihomo 二进制，但不启动 dnsmasq、pf、
-TUN，也不需要 sudo。它会用 live external-controller API 验证 `omg policies`、
-`omg policy-select` 和 `omg connections`，也会验证 `omg providers` 可以读取
-imported file 与 HTTP proxy-provider，`omg provider-update` 可以刷新这两类 provider，
-且 `omg snapshot` 可以在 mihomo 运行时聚合 status、doctor、leases、logs、policies、
-providers 和 connections。
-它会先验证未知 policy 会以机器可读 JSON 错误被拒绝，再在同一个 runtime 目录内
-重启 mihomo，验证 `profile.store-selected` 能恢复选中的策略。它也会启动本机
-origin 和受控 HTTP CONNECT proxy，验证本机/私网目标即使在 `EgressSwitch` 选择
-代理后仍被 source-scoped 保护规则保持为 `DIRECT`。它还验证专用
-`local-routing-set` 可协调 Rule/Global/Direct、HTTP-only Global 的 UDP fail-closed，
-以及普通 policies/selector 不能泄露或间接选择内部组。它证明的是 mihomo 控制面契约，
-不证明全 LAN 路由、透明代理捕获或真实远端代理出口；本机/下游真实出口隔离由
-`make lab-test-tun-local-routing` 证明。
+测试会渲染 imported profile，启动 mihomo 及 file/HTTP provider，验证一般策略组、策略
+选择、连接、provider 刷新和 snapshot，再重启 mihomo 验证选中策略的持久化。它也覆盖源
+地址限定的本地/私网规则和设备策略覆盖。
 
-透明代理门禁是 `make lab-test-tun`。它比默认 lab 路径更严格，因为客户端不使用
-`mixed-port`；测试必须证明 mihomo 通过 TUN 观察到了客户端 HTTPS 连接。
-
-真实设备测试仍然是单独的里程碑级检查，用来验证 Wi-Fi 行为、设备特有协议差异
-和 IPv6。集成测试期间绝不要在普通家庭或办公室 LAN 上启用本项目的 DHCP 服务器。
-隔离下游 LAN 的 smoke 计划见 `tests/real-device/README.zh-CN.md`。
+它不证明 DHCP、DNS、nftables 转发、TUN 流量、回滚或远程代理出口；这些结论需要后续
+Linux lab gate。测试时不要在普通家庭或办公 LAN 上启用 DHCP 服务。

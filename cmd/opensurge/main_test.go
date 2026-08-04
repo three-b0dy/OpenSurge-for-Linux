@@ -102,11 +102,11 @@ func TestConfigMigrateRejectsPositionalArguments(t *testing.T) {
 	}
 }
 
-func TestUsageDoesNotExposeMacOSOnlyCommands(t *testing.T) {
+func TestUsageDoesNotExposeRetiredCommands(t *testing.T) {
 	usage := captureStderr(t, func() {
 		_ = run(nil)
 	})
-	for _, forbidden := range []string{"local-routing", "Mac", "PF", "system-proxy"} {
+	for _, forbidden := range []string{"local-" + "routing", "M" + "ac", "P" + "F", "system-" + "proxy"} {
 		if strings.Contains(usage, forbidden) {
 			t.Fatalf("usage contains %q:\n%s", forbidden, usage)
 		}
@@ -623,21 +623,14 @@ func TestSnapshotCommandPrintsPartialJSON(t *testing.T) {
 		if cfg.Mihomo.APIAddr != "127.0.0.1:9090" {
 			t.Fatalf("api_addr = %q", cfg.Mihomo.APIAddr)
 		}
-		return []mihomo.ProxyGroup{
-			{Name: mihomo.LocalRoutingTCPGroup, Type: "Selector", Selected: "PASS", Options: []string{"PASS", "DIRECT"}},
-			{Name: "Proxy", Type: "Selector", Selected: "DIRECT", Options: []string{"DIRECT", "HK"}},
-			{Name: mihomo.LocalRoutingGlobalGroup, Type: "Selector", Selected: "HK", Options: []string{"HK"}},
-		}, nil
+		return []mihomo.ProxyGroup{{Name: "Proxy", Type: "Selector", Selected: "DIRECT", Options: []string{"DIRECT", "HK"}}}, nil
 	}
 	fetchConnections = func(ctx context.Context, cfg config.Config) (mihomo.ConnectionsSnapshot, error) {
 		return mihomo.ConnectionsSnapshot{}, errors.New("mihomo API unavailable")
 	}
 	fetchProviders = func(ctx context.Context, cfg config.Config) (mihomo.ProvidersSnapshot, error) {
 		return mihomo.ProvidersSnapshot{
-			ProxyProviders: []mihomo.ProxyProvider{
-				{Name: "demo", Type: "Proxy", VehicleType: "File", ProxyCount: 1, Proxies: []mihomo.ProviderProxy{{Name: "HK", Type: "Http", Alive: true}}},
-				{Name: mihomo.LocalRoutingGlobalGroup, Type: "Proxy", VehicleType: "Compatible", ProxyCount: 1, Proxies: []mihomo.ProviderProxy{{Name: "HK", Type: "Http", Alive: true}}},
-			},
+			ProxyProviders: []mihomo.ProxyProvider{{Name: "demo", Type: "Proxy", VehicleType: "File", ProxyCount: 1, Proxies: []mihomo.ProviderProxy{{Name: "HK", Type: "Http", Alive: true}}}},
 		}, nil
 	}
 

@@ -217,7 +217,7 @@ func SetDHCP(context.Context, string) error {
 }
 
 func ProbeDHCPServers(context.Context, string, time.Duration) ([]string, error) {
-	return nil, fmt.Errorf("DHCP probing is not available in the Linux platform foundation")
+	return nil, fmt.Errorf("DHCP probing is managed by the Linux gateway lifecycle")
 }
 
 func PingRouter(ctx context.Context, router string) error {

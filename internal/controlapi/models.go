@@ -161,7 +161,7 @@ type DevicePolicyConfigInput struct {
 const (
 	RecoveryIdle                        = "idle"
 	RecoveryPrepared                    = "prepared"
-	RecoveryMacStatic                   = "mac_static"
+	RecoveryGatewayStatic               = "gateway_static"
 	RecoveryRouterDHCPDisabledConfirmed = "router_dhcp_disabled_confirmed"
 	RecoveryGatewayActive               = "gateway_active"
 	RecoveryClientValidated             = "client_validated"
@@ -262,16 +262,6 @@ type SelectionRequest struct {
 	Policy string `json:"policy"`
 }
 
-type LocalRoutingRequest struct {
-	Mode         string `json:"mode"`
-	GlobalPolicy string `json:"global_policy,omitempty"`
-}
-
-type LocalRoutingResponse struct {
-	SchemaVersion int `json:"schema_version"`
-	mihomo.LocalRoutingSnapshot
-}
-
 type DevicesResponse struct {
 	SchemaVersion    int                     `json:"schema_version"`
 	DesiredDigest    string                  `json:"desired_digest,omitempty"`
@@ -288,7 +278,7 @@ type DevicesResponse struct {
 }
 
 // ObservedDevice is a currently active same-LAN source seen by mihomo. A MAC
-// is included only when the macOS ARP cache contains a matching neighbor; this
+// is included only when the Linux neighbor table contains a matching entry; this
 // remains observation evidence rather than DHCP-backed identity proof.
 type ObservedDevice struct {
 	IP                string `json:"ip"`
@@ -299,7 +289,7 @@ type ObservedDevice struct {
 
 // DeviceTrafficResponse is a point-in-time aggregation of the currently
 // active mihomo sessions. GatewayLocal is kept separate from Devices so the
-// Mac can be shown alongside downstream traffic without becoming part of the
+// gateway host can be shown alongside downstream traffic without becoming part of the
 // LAN device inventory or policy identity model. Counters are session-lifetime
 // counters from mihomo, not persisted history.
 type DeviceTrafficResponse struct {

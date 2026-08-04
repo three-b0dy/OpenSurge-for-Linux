@@ -1,47 +1,19 @@
 # Integration tests
 
-[简体中文](README.zh-CN.md) | English
-
-The automated virtual LAN lab lives in `tests/lab`. It uses the real macOS
-`pf`, `dnsmasq`, and `mihomo` implementation with disposable Lima Linux clients.
-The default loop covers NAT, DHCP/DNS, direct HTTPS, and explicit HTTPS through
-mihomo `mixed-port`. The supported macOS transparent proxy path is TUN because
-the current mihomo Darwin redir listener is unsupported.
-
-CI currently runs the fast unit-test gate only. Run `make lab-test` locally, in
-a nightly job, or as a manual macOS gate for changes that can alter real traffic
-or host network state.
-
-Policy-control changes can use a smaller non-root integration gate:
+The policy-control gate exercises the reusable Linux control-plane contract
+against a live mihomo external controller without claiming a complete gateway
+network path:
 
 ```sh
 make policy-control-test
 ```
 
-This gate writes an imported mihomo fixture under `runtime/integration/`, renders
-OpenSurge's gateway overlay, starts the real mihomo binary without dnsmasq, pf,
-TUN, or sudo, and verifies `omg policies`, `omg policy-select`, and
-`omg connections` against the live external-controller API. It also verifies
-`omg providers` can read imported file and HTTP proxy-providers,
-`omg provider-update` can refresh both kinds, and `omg snapshot` can aggregate
-status, doctor, leases, logs, policies, providers, and connections while mihomo
-is running. The gate rejects an unknown policy with a machine-readable JSON
-error before switching, then restarts mihomo in the same runtime directory to verify
-`profile.store-selected` restores the selected policy. It also starts a local
-origin and controlled HTTP CONNECT proxy, then proves source-scoped
-local/private guards keep that destination `DIRECT` even after `EgressSwitch`
-selects the proxy. It also verifies the dedicated local-routing controller,
-UDP fail-closed for an HTTP-only Global target, and that generic policy
-surfaces cannot expose or indirectly select internal groups. It proves the
-control-plane contract with mihomo, not whole-LAN routing, transparent proxy
-capture, or a real remote proxy exit; `make lab-test-tun-local-routing` owns the
-real local-vs-downstream egress-isolation proof.
+It renders an imported profile, starts mihomo with file and HTTP providers,
+checks ordinary policies, policy selection, connections, provider refresh, and
+the aggregate snapshot, then restarts mihomo to verify selected-policy
+persistence. It also checks source-scoped local/private rules and device
+policy overlays.
 
-The transparent proxy gate is `make lab-test-tun`. It is stricter than the
-default lab path because clients do not use `mixed-port`; the test must prove
-that mihomo observed the client HTTPS connection through TUN.
-
-Real-device tests remain a separate milestone-level check for Wi-Fi behavior,
-device-specific protocol quirks, and IPv6. Never enable the project's DHCP
-server on a normal home or office LAN during integration testing. See
-`tests/real-device/README.md` for the isolated downstream-LAN smoke plan.
+The gate does not prove DHCP, DNS, nftables forwarding, TUN traffic, rollback,
+or a remote proxy exit. Those claims require the later Linux lab gates. Do not
+enable a DHCP server on an ordinary home or office LAN during testing.

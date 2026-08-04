@@ -134,7 +134,7 @@ export function App() {
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand"><img className="brand-mark" src="/opensurge-icon.png" alt="" aria-hidden="true" /><div><strong>OpenSurge</strong><small>for Mac</small></div></div>
+      <div className="brand"><img className="brand-mark" src="/opensurge-icon.png" alt="" aria-hidden="true" /><div><strong>OpenSurge</strong><small>for Linux</small></div></div>
       <nav aria-label="OpenSurge sections">
         {nav.map(item => <button key={item.id} className={page === item.id ? 'active' : ''} onClick={() => go(item.id)}><span aria-hidden="true">{item.icon}</span>{item.label}</button>)}
       </nav>
@@ -142,7 +142,7 @@ export function App() {
       <div className="sidebar-status"><StatusDot status={overview?.status.gateway ?? 'unreachable'} /><div><strong>{statusLabel(overview?.status.gateway)}</strong><small>{overview?.status.lan_ip || 'Control API'}</small></div></div>
     </aside>
     <main className="workspace">
-      {authenticationRequired ? <section className="session-expired" role="alert"><span aria-hidden="true">!</span><div><h1>Web GUI 与 OpenSurge 的安全连接已过期</h1><p>请点击 macOS 菜单栏中的 OpenSurge 图标，然后选择“打开 OpenSurge 面板”。</p></div></section> : <>
+      {authenticationRequired ? <section className="session-expired" role="alert"><span aria-hidden="true">!</span><div><h1>Web GUI 与 OpenSurge 的安全连接已过期</h1><p>请重新打开 OpenSurge 控制面板并完成会话引导。</p></div></section> : <>
         {overview?.recovery.required && needsNetworkRecoveryWarning(overview.recovery.stage) && <RecoveryBanner recovery={overview.recovery.stage} onOpen={() => go('network', 'control')} />}
         {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p><button onClick={() => void refresh()}>重试</button></div>}
         <PageErrorBoundary key={page}>

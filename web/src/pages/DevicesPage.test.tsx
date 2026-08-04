@@ -2,7 +2,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { DevicePolicyDocument, DevicesResponse, LocalRouting, LocalRoutingMode, Overview, PolicySet } from '../types'
+import type { DevicePolicyDocument, DevicesResponse, Overview, PolicySet } from '../types'
 
 vi.mock('../api', () => {
   class RequestError extends Error {
@@ -14,7 +14,6 @@ vi.mock('../api', () => {
     api: {
       devices: vi.fn(), config: vi.fn(), sources: vi.fn(), devicePolicy: vi.fn(), saveDevicePolicy: vi.fn(),
       selectPolicy: vi.fn(), selectDevicePolicy: vi.fn(), gateway: vi.fn(),
-      localRouting: vi.fn(), setLocalRouting: vi.fn(),
       proxyHealth: vi.fn(), testProxyHealth: vi.fn(),
     },
   }
@@ -35,19 +34,6 @@ const overview = {
   ],
   leases: [],
 } as unknown as Overview
-
-function localRouting(mode: LocalRoutingMode = 'rule', selected = 'Proxy-A'): LocalRouting {
-  return {
-    schema_version: 1,
-    mode,
-    available_modes: ['rule', 'direct', 'global'],
-    global_group: { name: 'open-surge/mac-global', type: 'Selector', selected, options: ['Proxy-A', 'Proxy-B'] },
-    udp_behavior: mode === 'global' ? 'proxy' : mode === 'direct' ? 'direct' : 'rules',
-    transports: ['tun', 'loopback_explicit_proxy'],
-    new_connections_only: true,
-    consistent: true,
-  }
-}
 
 function documentFor(policy: PolicySet, revision = 'policy-r1'): DevicePolicyDocument {
   return { schema_version: 1, revision, policy }
@@ -73,8 +59,6 @@ describe('DevicesPage', () => {
     vi.mocked(api.devices).mockResolvedValue(devicesResponse())
     vi.mocked(api.selectPolicy).mockResolvedValue({} as never)
     vi.mocked(api.selectDevicePolicy).mockResolvedValue({} as never)
-    vi.mocked(api.localRouting).mockResolvedValue(localRouting())
-    vi.mocked(api.setLocalRouting).mockImplementation(async (mode, policy) => localRouting(mode, policy ?? 'Proxy-A'))
     vi.mocked(api.gateway).mockResolvedValue({ id: 'reload-1', kind: 'reload', state: 'running' })
     vi.mocked(api.proxyHealth).mockResolvedValue({ schema_version: 1, test_url: 'https://www.gstatic.com/generate_204', proxies: [
       { name: 'DIRECT', type: 'Direct', selected: '', provider: '', udp: true, status: 'not_applicable', probeable: false },
@@ -103,7 +87,7 @@ describe('DevicesPage', () => {
 
     await screen.findByText('alice')
     const stack = document.querySelector('.device-stack') as HTMLElement
-    expect(screen.getByRole('heading', { name: '当前 Mac 的设备设置' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '设备出口' })).toBeTruthy()
     expect(stack.querySelectorAll('.device-card')).toHaveLength(2)
 
     const saveBar = document.querySelector('.sticky-save') as HTMLElement
@@ -115,29 +99,6 @@ describe('DevicesPage', () => {
     expect(within(secondCard).getByRole('button', { name: '编辑此设备规则' })).toBeTruthy()
     await userEvent.click(within(firstCard).getByRole('radio', { name: /独立设备出口/ }))
     expect(saveBar.classList.contains('has-changes')).toBe(true)
-  })
-
-  it('shows the local global outlet only for fixed routing and keeps the policy-page shortcut', async () => {
-    const { onNavigate } = renderPage()
-    await screen.findByRole('heading', { name: '出口方式' })
-    expect(screen.getByText('根据网站和网关规则自动分流')).toBeTruthy()
-    expect(screen.queryByLabelText(/本机全局策略组/)).toBeNull()
-
-    await userEvent.click(screen.getByRole('button', { name: '固定出口' }))
-    await waitFor(() => expect(api.setLocalRouting).toHaveBeenCalledWith('global', undefined))
-    expect(await screen.findByText('本机公网流量统一使用当前全局策略')).toBeTruthy()
-    await userEvent.click(screen.getByLabelText('本机全局策略组 当前策略 Proxy-A'))
-    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Proxy-B/ }))
-    await waitFor(() => expect(api.setLocalRouting).toHaveBeenCalledWith('global', 'Proxy-B'))
-    expect(await screen.findByLabelText('本机全局策略组 当前策略 Proxy-B')).toBeTruthy()
-
-    await userEvent.click(screen.getByRole('button', { name: '本机直连' }))
-    await waitFor(() => expect(api.setLocalRouting).toHaveBeenCalledWith('direct', undefined))
-    expect(await screen.findByText('本机公网流量不使用代理')).toBeTruthy()
-    expect(screen.queryByLabelText(/本机全局策略组/)).toBeNull()
-
-    await userEvent.click(screen.getByRole('button', { name: '前往策略与节点健康 →' }))
-    expect(onNavigate).toHaveBeenCalledWith('policies')
   })
 
   it('merges desired and applied devices into four states and separates identity readiness', async () => {
@@ -275,7 +236,7 @@ describe('DevicesPage', () => {
     expect(vi.mocked(api.saveDevicePolicy).mock.calls[0][0].devices[0]).toEqual(expect.objectContaining({ id: 'pixel-living-room', name: 'Pixel Living Room', egress_mode: 'dedicated' }))
   })
 
-  it('lists a same-LAN source currently passing through Mac and prefills its observed identity', async () => {
+  it('lists a same-LAN source currently passing through the gateway host and prefills its observed identity', async () => {
     vi.mocked(api.devices).mockResolvedValue(devicesResponse({
       observed_devices: [
         { ip: '192.168.1.137', mac: 'aa:bb:cc:dd:ee:37', active_connections: 3, neighbor_observed: true },
@@ -284,7 +245,7 @@ describe('DevicesPage', () => {
     }))
     renderPage({ ...overview, topology: 'same_lan' } as unknown as Overview)
 
-    expect(await screen.findByText('当前经过 Mac 的设备')).toBeTruthy()
+    expect(await screen.findByText('当前经过网关主机的设备')).toBeTruthy()
     expect(screen.getByText('未登记设备 192.168.1.137')).toBeTruthy()
     expect(screen.getByText(/3 个活跃连接/)).toBeTruthy()
     expect(screen.getByText(/MAC 尚未从邻居表解析/)).toBeTruthy()
@@ -299,7 +260,7 @@ describe('DevicesPage', () => {
   it('registers multiple same-LAN devices by fixed IPv4 without inventing a MAC', async () => {
     renderPage({ ...overview, topology: 'same_lan' } as unknown as Overview)
 
-    await screen.findByText('当前经过 Mac 的设备')
+    await screen.findByText('当前经过网关主机的设备')
     expect(screen.getByText('MAC 地址（可选身份信息）')).toBeTruthy()
     await userEvent.type(screen.getByLabelText('设备名称'), 'IP Only One')
     await userEvent.type(screen.getByLabelText('固定 IPv4'), '192.168.1.137')
@@ -467,7 +428,7 @@ describe('DevicesPage', () => {
     }))
     renderPage({ ...overview, topology: 'same_lan' } as unknown as Overview)
 
-    expect(await screen.findByText('静态配置身份：等待该 IPv4 经过 Mac')).toBeTruthy()
+    expect(await screen.findByText('静态配置身份：等待该 IPv4 经过网关主机')).toBeTruthy()
     expect(screen.queryByRole('button', { name: '使用当前 IP 并应用' })).toBeNull()
     expect(screen.getByText('设备按登记 IP 接入后生效')).toBeTruthy()
   })
@@ -485,7 +446,7 @@ describe('DevicesPage', () => {
     }))
     renderPage({ ...overview, topology: 'same_lan' } as unknown as Overview)
 
-    expect(await screen.findByText('静态配置身份：等待该 IPv4 经过 Mac')).toBeTruthy()
+    expect(await screen.findByText('静态配置身份：等待该 IPv4 经过网关主机')).toBeTruthy()
     expect(screen.getByText('设备按登记 IP 接入后生效')).toBeTruthy()
     const outlet = screen.getByLabelText('alice 独立出口 当前摘要') as HTMLButtonElement
     expect(outlet.disabled).toBe(false)
@@ -595,7 +556,7 @@ describe('DevicesPage', () => {
     renderPage()
     await userEvent.click(await screen.findByRole('button', { name: '应用并重载网关' }))
     const dialog = screen.getByRole('dialog', { name: '应用设备配置并重载网关？' })
-    expect(dialog.textContent).toContain('DHCP/DNS、mihomo、PF 与 IPv4 forwarding')
+    expect(dialog.textContent).toContain('DHCP/DNS、mihomo、nftables 与 IPv4 forwarding')
     expect(dialog.textContent).toContain('当前连接会中断')
     await userEvent.click(within(dialog).getByRole('button', { name: '确认应用并重载' }))
     await waitFor(() => expect(api.gateway).toHaveBeenCalledWith('reload'))

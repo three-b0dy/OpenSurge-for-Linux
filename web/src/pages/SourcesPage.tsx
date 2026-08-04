@@ -139,7 +139,7 @@ export function SourcesPage({ overview, onChanged }: { overview: Overview | null
     </section>
     {pending && <dialog className="reload-dialog" open aria-modal="true" aria-labelledby="source-apply-title">
       <h2 id="source-apply-title">{running ? '应用订阅并重载网关？' : '设为下次启动版本？'}</h2>
-      <p>{running ? 'OpenSurge 会先验证完整候选配置，再短暂重启 DHCP/DNS、mihomo、PF 与 IPv4 forwarding。只有重载成功后才会标记为运行版本。' : '当前网关未运行。订阅会保存为 desired 配置，并在下次启动成功后成为运行版本。'}</p>
+      <p>{running ? 'OpenSurge 会先验证完整候选配置，再短暂重启 DHCP/DNS、mihomo、nftables 与 IPv4 forwarding。只有重载成功后才会标记为运行版本。' : '当前网关未运行。订阅会保存为 desired 配置，并在下次启动成功后成为运行版本。'}</p>
       {running && <ul><li>当前连接会中断并重新建立。</li><li>验证失败不会停止现有网关。</li><li>重载失败会恢复旧配置，并尽力恢复原网关。</li></ul>}
       <div className="dialog-actions"><button type="button" disabled={busy} onClick={() => setPending(null)}>取消</button><button className="primary" type="button" autoFocus disabled={busy} onClick={() => void apply()}><ActionLabel active={activeAction?.kind === 'apply'} idle={running ? '确认应用并重载' : '确认设为下次启动版本'} pending="正在验证并应用…" /></button></div>
     </dialog>}

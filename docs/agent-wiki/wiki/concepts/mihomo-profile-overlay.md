@@ -1,119 +1,39 @@
 # mihomo profile overlay
 
-When a task involves importing existing mihomo or Clash-style profiles, keep the
-boundary clear: mihomo remains the proxy engine, but OpenSurge owns the Linux
-gateway overlay.
+When an existing mihomo or Clash-style profile is imported, mihomo remains the
+proxy engine while OpenSurge owns the Linux gateway overlay.
 
-## Modes
+## Imported sections
 
-`mihomo.profile_mode: "managed"` is the default. OpenSurge renders its minimal
-DIRECT/smoke mihomo config.
+`mihomo.profile_mode: imported` reads the configured profile and preserves its
+ordinary `proxies`, `proxy-providers`, `proxy-groups`, `rule-providers`, and
+`rules` sections. Relative provider paths are resolved from the imported
+profile directory. OpenSurge does not rewrite the source snapshot; only the
+generated runtime config may normalize YAML style.
 
-`mihomo.profile_mode: "imported"` reads `mihomo.profile` and imports only these
-top-level mihomo engine sections. Relative `mihomo.profile` paths are resolved
-from the OpenSurge config file's directory. Relative `path:` entries inside
-imported `proxy-providers` and `rule-providers` are resolved from the imported
-mihomo profile's directory. When starting or validating mihomo for an imported
-profile, OpenSurge passes `-d <profile-dir>` so mihomo SAFE_PATHS accepts those
-provider files:
-
-- `proxies`
-- `proxy-providers`
-- `proxy-groups`
-- `rule-providers`
-- `rules`
-
-These sections are parsed and composed as YAML nodes rather than line-oriented
-text. Both block and flow collections are supported, including compact
-`rules: ['MATCH,DIRECT']`, quoted top-level keys, and inline provider mappings.
-OpenSurge does not rewrite the imported source snapshot; only the generated
-runtime mihomo config may normalize collection style or indentation.
-
-The profile's top-level `dns` section is merged at field level. OpenSurge
-rejects the imported values for `enable`, `listen`, `ipv6`, `enhanced-mode`,
-and `fake-ip-range`, but preserves the remaining resolver and filtering fields.
-This includes `default-nameserver`, `nameserver`, `nameserver-policy`,
-`proxy-server-nameserver`, `direct-nameserver`, `fake-ip-filter`, and fallback
-settings. Proxy server hostnames can depend on these fields, so discarding them
-can leave mihomo healthy while every imported node resolves to an unreachable
-address.
+The imported DNS section is merged field by field. OpenSurge retains the
+resolver and filtering fields it can safely compose while owning the DNS/TUN
+settings required by the Linux gateway contract.
 
 ## Gateway-owned fields
 
-Imported profiles must not become raw pass-through configs. OpenSurge still
-renders and owns:
+The overlay owns LAN binding, the external controller, selected-policy
+persistence, DNS/TUN enablement, IPv4-only gateway behavior, and private-route
+exclusions. The resulting config must keep `redir_port` inactive and must not
+discard ordinary imported policy groups or providers.
 
-- LAN binding through `mixed-port`, `allow-lan`, and `bind-address`;
-- `external-controller`, so `status`, `doctor`, and policy-group CLI commands
-  have the expected API target;
-- `profile.store-selected: true`, so mihomo can persist selected policy-group
-  members across restarts;
-- DNS enablement, listener, IPv4-only mode, fake-ip mode/range, and TUN DNS
-  hijack; imported resolver/filter policy is merged around these owned fields;
-- TUN device, stack, routing flags, and LAN/private route exclusions.
-
-This prevents a desktop mihomo profile from disabling LAN access, turning off
-DNS/TUN, changing controller ports, or reintroducing unsupported transparent
-proxy paths.
+Device policy is an independent overlay. It generates `device/<id>/...`
+selectors and source-address rules while preserving normal imported policy
+selection and provider behavior. The generated `device/` and
+`open-surge-ruleset-` namespaces are reserved.
 
 ## Validation
 
-Imported profile support is a mihomo config-generation change. Run `make test`
-for code-level coverage. `doctor` includes a `mihomo config render` check so an
-unreadable imported profile or missing `rules` section fails before gateway
-startup. Use `go run ./cmd/opensurge render-mihomo --config <path>` to inspect the
-final overlaid mihomo config without root or service startup. Use
-`go run ./cmd/opensurge validate-mihomo --config <path>` for a stronger non-root check
-that renders the final config and runs mihomo's own `-t` validation with the same
-`-d` directory OpenSurge uses at startup. This command requires `mihomo.binary`
-in the OpenSurge config to point to an installed mihomo binary.
+Use `make test` for code-level coverage. `doctor` and
+`opensurge validate-mihomo` render the final config and can run mihomo's own
+validation when a binary is configured. The policy, provider, connection, and
+snapshot commands inspect ordinary live control-plane resources; they do not
+claim a complete gateway lifecycle.
 
-When mihomo is running, use `opensurge policies --config <path>` to list policy groups,
-`opensurge policy-select --config <path> --group <name> --policy <name>` to switch the
-selected member, and `opensurge connections --config <path>` to inspect active mihomo
-connections. Use `opensurge providers --config <path>` to inspect proxy/rule
-providers, and `opensurge provider-update --config <path> --provider <name>` to
-refresh one proxy provider. `policy-select` first reads live groups and rejects
-unknown group or policy names before sending the selection change. These are
-control-plane checks. `make policy-control-test` also proves source-scoped
-local/private guards keep a local mixed-port target `DIRECT`, exercises the
-dedicated local-routing selectors, and verifies both file and locally served
-HTTP proxy-provider refresh. It still does not require real-device validation
-unless the change also touches gateway, DNS, TUN, or traffic-capture behavior.
-
-If a change affects generated runtime traffic defaults, TUN behavior, DNS
-behavior, or real proxy egress semantics, use the matching network gate:
-`make lab-test`, `make lab-test-tun`, `make lab-test-tun-imported-profile`,
-`make lab-test-tun-imported-egress`, or a documented real-device smoke.
-
-When `device_policy.file` is configured, its device overrides are inserted
-before imported global rules. A `dedicated` device default is also inserted
-before global rules after source-scoped local/private `DIRECT` guards; an
-`inherit_global` device has no default selector. Only a document with no
-explicit mode retains the legacy default after global rules and before terminal
-`MATCH`. An imported profile with rules after `MATCH` is rejected. Device identity and the selector data path use
-`make lab-test-tun-device-policy`; template and rule-provider compilation use
-`make test`.
-
-The local Linux Rule/Global/Direct overlay is inserted before device overrides
-without changing the imported top-level rule mode. It owns hidden
-`open-surge/mac-*` selectors and matches both inbound type and local source
-identity, so downstream device sources continue into their existing path.
-Imported proxy/group targets may not occupy that reserved namespace. See
-`concepts/local-mac-routing-modes.md` and validate the real isolation boundary
-with `make lab-test-tun-local-routing`.
-
-`make lab-test-tun-imported-profile` runs the TUN gate with
-`tests/lab/mihomo-profile.imported-tun.yaml`, which keeps rules at
-`MATCH,DIRECT`. It proves the imported profile overlay can start in the TUN lab;
-it does not prove an external proxy egress.
-
-`make lab-test-tun-imported-egress` runs the TUN gate with
-`tests/lab/mihomo-profile.imported-tun-egress.yaml`. The fixture uses a local
-HTTP provider to add `egress-proxy`, then the lab switches `TunEgress` from
-`DIRECT` to `egress-proxy` through `opensurge policy-select`. The direct signals are
-`mihomo.log` entries for `TunEgress[DIRECT]` and `TunEgress[egress-proxy]`, plus
-the controlled proxy observing `CONNECT <host>:443` only after the switch. This
-proves controlled local proxy egress switching through transparent TUN; it does
-not prove a real subscription node, remote exit IP, same-LAN, or real-device
-behavior.
+If a change affects DNS, TUN, forwarding, or real proxy egress, use the
+matching later Linux network gate and report the gate that actually ran.

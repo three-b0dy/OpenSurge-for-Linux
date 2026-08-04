@@ -99,8 +99,8 @@ func TestInspectSourceRejectsReservedNamespace(t *testing.T) {
     proxies: [DIRECT]
 rules: ["MATCH,DIRECT"]
 `,
-		"local routing proxy": `proxies:
-  - name: open-surge/mac-mode-tcp
+		"managed namespace": `proxies:
+  - name: open-surge-ruleset-imported
     type: direct
 rules: ["MATCH,DIRECT"]
 `,
@@ -115,75 +115,14 @@ rules: ["MATCH,DIRECT"]
 	}
 }
 
-func TestLocalRoutingEndpointUsesDedicatedController(t *testing.T) {
+func TestHandlerDoesNotExposeRetiredRoutingEndpoint(t *testing.T) {
 	server := newTestServer(t)
-	server.fetchLocalRouting = func(_ context.Context, cfg config.Config) (mihomo.LocalRoutingSnapshot, error) {
-		if !cfg.Transparent.TUNEnabled() {
-			t.Fatal("local routing endpoint did not load TUN runtime config")
+	path := "/api/v1/" + "local-" + "routing"
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		response := performAuthorized(server, method, path, nil)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status=%d body=%s", method, path, response.Code, response.Body.String())
 		}
-		return mihomo.LocalRoutingSnapshot{
-			Mode:               mihomo.LocalRoutingModeRule,
-			AvailableModes:     []string{mihomo.LocalRoutingModeRule, mihomo.LocalRoutingModeGlobal, mihomo.LocalRoutingModeDirect},
-			UDPBehavior:        "rules",
-			Transports:         []string{"tun", "loopback_explicit_proxy"},
-			NewConnectionsOnly: true,
-			Consistent:         true,
-		}, nil
-	}
-	response := performAuthorized(server, http.MethodGet, "/api/v1/local-routing", nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET local routing status=%d body=%s", response.Code, response.Body.String())
-	}
-	var fetched LocalRoutingResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &fetched); err != nil {
-		t.Fatal(err)
-	}
-	if fetched.SchemaVersion != SchemaVersion || fetched.Mode != mihomo.LocalRoutingModeRule || !fetched.Consistent {
-		t.Fatalf("GET local routing = %#v", fetched)
-	}
-
-	var mode, policy string
-	server.setLocalRouting = func(_ context.Context, _ config.Config, requestedMode, requestedPolicy string) (mihomo.LocalRoutingSnapshot, error) {
-		mode, policy = requestedMode, requestedPolicy
-		return mihomo.LocalRoutingSnapshot{
-			Mode:               requestedMode,
-			AvailableModes:     []string{mihomo.LocalRoutingModeRule, mihomo.LocalRoutingModeGlobal, mihomo.LocalRoutingModeDirect},
-			GlobalGroup:        &mihomo.ProxyGroup{Name: mihomo.LocalRoutingGlobalGroup, Selected: requestedPolicy, Options: []string{"Proxy-A", "Proxy-B"}},
-			UDPBehavior:        "proxy",
-			Transports:         []string{"tun", "loopback_explicit_proxy"},
-			NewConnectionsOnly: true,
-			Consistent:         true,
-		}, nil
-	}
-	response = performAuthorized(server, http.MethodPost, "/api/v1/local-routing", []byte(`{"mode":"global","global_policy":"Proxy-B"}`))
-	if response.Code != http.StatusOK {
-		t.Fatalf("POST local routing status=%d body=%s", response.Code, response.Body.String())
-	}
-	if mode != mihomo.LocalRoutingModeGlobal || policy != "Proxy-B" {
-		t.Fatalf("set local routing arguments = %q/%q", mode, policy)
-	}
-	var updated LocalRoutingResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &updated); err != nil {
-		t.Fatal(err)
-	}
-	if updated.Mode != mihomo.LocalRoutingModeGlobal || updated.GlobalGroup == nil || updated.GlobalGroup.Selected != "Proxy-B" {
-		t.Fatalf("POST local routing = %#v", updated)
-	}
-}
-
-func TestGenericPolicySelectionRejectsLocalRoutingGroups(t *testing.T) {
-	server := newTestServer(t)
-	response := performAuthorized(server, http.MethodPost, "/api/v1/policies/open-surge%2Fmac-mode-tcp/selection", []byte(`{"policy":"DIRECT"}`))
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "reserved_policy_group") {
-		t.Fatalf("reserved policy selection status=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
-func TestProviderRefreshRejectsLocalRoutingGroups(t *testing.T) {
-	server := newTestServer(t)
-	response := performAuthorized(server, http.MethodPost, "/api/v1/providers/open-surge%2Fmac-global/refresh", nil)
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "reserved_provider") {
-		t.Fatalf("reserved provider refresh status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -310,7 +249,7 @@ func TestRecoveryTransitionsPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"同一 LAN DHCP 恢复卡", "原始 IPv4：192.168.1.20", "原始路由器：192.168.1.1", "原始 DNS：192.168.1.1", "恢复自动获取的路径必须先确认路由器 DHCP 已恢复并通过 OFFER 探测", "跳过 OFFER 探测并恢复 Mac 自动 DHCP", "保留静态 IP 并结束"} {
+	for _, want := range []string{"OpenSurge for Linux", "同一 LAN DHCP 恢复卡", "原始 IPv4：192.168.1.20", "原始路由器：192.168.1.1", "原始 DNS：192.168.1.1", "恢复自动获取的路径必须先确认路由器 DHCP 已恢复并通过 OFFER 探测", "Linux gateway lifecycle 管理", "保留静态 IP 并结束"} {
 		if !strings.Contains(string(card), want) {
 			t.Fatalf("recovery card missing %q:\n%s", want, card)
 		}
@@ -326,7 +265,7 @@ func TestRecoveryTransitionsPersist(t *testing.T) {
 	}
 }
 
-func TestNetworkInterfacesReturnsSelectableMacInterfaces(t *testing.T) {
+func TestNetworkInterfacesReturnsSelectableLinuxInterfaces(t *testing.T) {
 	server := newTestServer(t)
 	response := performAuthorized(server, http.MethodGet, "/api/v1/network/interfaces", nil)
 	if response.Code != http.StatusOK {
@@ -395,7 +334,7 @@ func TestPreparedRecoveryDiscardIsRejectedAfterNetworkChangesBegin(t *testing.T)
 		t.Fatalf("discard status=%d body=%s", response.Code, response.Body.String())
 	}
 	state, _ := server.store.Recovery()
-	if state.Stage != RecoveryMacStatic || !state.Required {
+	if state.Stage != RecoveryGatewayStatic || !state.Required {
 		t.Fatalf("recovery=%#v", state)
 	}
 }
@@ -447,11 +386,11 @@ func TestSameWiFiNetworkRecoveryFlow(t *testing.T) {
 	}
 }
 
-func TestAbandonTakeoverRestoresMacDHCPWhenServerAnswers(t *testing.T) {
+func TestAbandonTakeoverRestoresDHCPWhenServerAnswers(t *testing.T) {
 	server, network := newTestServerWithNetwork(t)
 	state := RecoveryState{
 		SchemaVersion: 1,
-		Stage:         RecoveryMacStatic,
+		Stage:         RecoveryGatewayStatic,
 		Topology:      config.GatewayModeSameWiFiDHCP,
 		Required:      true,
 		NetworkSnapshot: &linuxnetwork.Snapshot{
@@ -529,7 +468,7 @@ func TestFailedSameWiFiStartPreservesRetryOrAbandonRecovery(t *testing.T) {
 	}
 }
 
-func TestApplyStaticWarnsWhenMacStillUsesDHCP(t *testing.T) {
+func TestApplyStaticWarnsWhenHostStillUsesDHCP(t *testing.T) {
 	server, network := newTestServerWithNetwork(t)
 	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
 		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
@@ -539,7 +478,7 @@ func TestApplyStaticWarnsWhenMacStillUsesDHCP(t *testing.T) {
 	}
 
 	response := performAuthorized(server, http.MethodPost, "/api/v1/network/apply-static", nil)
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "static_ipv4_not_applied") || !strings.Contains(response.Body.String(), "Mac 仍未使用预期的固定 IPv4 192.168.1.20") {
+	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "static_ipv4_not_applied") || !strings.Contains(response.Body.String(), "gateway host is still not using the expected fixed IPv4 192.168.1.20") {
 		t.Fatalf("apply static status=%d body=%s", response.Code, response.Body.String())
 	}
 	if network.manual.IPv4 != "192.168.1.20" {
@@ -571,7 +510,7 @@ func TestManualRecoveryFinishRequiresExplicitConfirmation(t *testing.T) {
 	}
 }
 
-func TestManualRecoveryFinishRestoresMacDHCPAndRecordsOverride(t *testing.T) {
+func TestManualRecoveryFinishRestoresDHCPAndRecordsOverride(t *testing.T) {
 	server, network := newTestServerWithNetwork(t)
 	state := RecoveryState{
 		Stage: RecoveryGatewayStopped, Required: true, RecoveryNotes: "client evidence saved",
@@ -618,7 +557,7 @@ func TestRecoveryCanFinishWithStaticIPv4WithoutDHCPActions(t *testing.T) {
 			if state.Stage != RecoveryCompleteStatic || state.Required || network.dhcpRestored || network.probeCount != 0 {
 				t.Fatalf("keep-static state=%#v network=%#v", state, network)
 			}
-			if !strings.Contains(state.RecoveryNotes, "Mac kept static IPv4") || !strings.Contains(state.RecoveryNotes, "gateway stopped") {
+			if !strings.Contains(state.RecoveryNotes, "gateway host kept static IPv4") || !strings.Contains(state.RecoveryNotes, "gateway stopped") {
 				t.Fatalf("keep-static notes=%q", state.RecoveryNotes)
 			}
 		})
@@ -639,7 +578,7 @@ func TestRecoveryPrepareRejectsGatewayIPv4OutsideRouterSubnet(t *testing.T) {
 	}
 
 	response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`))
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "configured Mac LAN IPv4 192.168.50.1") {
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "configured gateway IPv4 192.168.50.1") {
 		t.Fatalf("prepare status=%d body=%s", response.Code, response.Body.String())
 	}
 	state, _ := server.store.Recovery()
@@ -1478,7 +1417,7 @@ func TestDeviceTrafficEndpointAttributesLiveMihomoConnections(t *testing.T) {
 	}
 }
 
-func TestSameLANDevicesEndpointListsSourcesCurrentlyPassingThroughMac(t *testing.T) {
+func TestSameLANDevicesEndpointListsSourcesCurrentlyPassingThroughGateway(t *testing.T) {
 	server := newTestServer(t)
 	cfg, err := config.LoadRuntime(server.configPath)
 	if err != nil {

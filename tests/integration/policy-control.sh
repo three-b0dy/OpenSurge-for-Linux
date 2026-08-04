@@ -13,7 +13,7 @@ REMOTE_PROVIDER="$WORK_DIR/remote-provider.yaml"
 DEVICE_POLICY="$WORK_DIR/device-policy.json"
 MIHOMO_CONFIG="$WORK_DIR/mihomo.yaml"
 MIHOMO_LOG="$WORK_DIR/logs/mihomo.log"
-OMG_BIN="$WORK_DIR/omg"
+OPENSURGE_BIN="$WORK_DIR/opensurge"
 EGRESS_PROBE_BIN="$WORK_DIR/egress-probe"
 MIHOMO_BINARY="${OMG_POLICY_CONTROL_MIHOMO_BINARY:-$ROOT/runtime/tools/bin/mihomo}"
 API_ADDR="${OMG_POLICY_CONTROL_API_ADDR:-127.0.0.1:19091}"
@@ -139,8 +139,8 @@ device_policy:
 EOF
 }
 
-build_omg() {
-  GOCACHE="${GOCACHE:-$WORK_DIR/go-cache}" go build -o "$OMG_BIN" ./cmd/omg
+build_opensurge() {
+  GOCACHE="${GOCACHE:-$WORK_DIR/go-cache}" go build -o "$OPENSURGE_BIN" ./cmd/opensurge
   GOCACHE="${GOCACHE:-$WORK_DIR/go-cache}" go build -o "$EGRESS_PROBE_BIN" ./tests/integration/egressprobe
 }
 
@@ -206,7 +206,7 @@ wait_for_policy_option() {
   local output="$WORK_DIR/policies-wait.json"
   local attempt
   for attempt in $(seq 1 50); do
-    if "$OMG_BIN" policies --config "$CONFIG" --format json >"$output" 2>"$WORK_DIR/policies-wait.err" &&
+    if "$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$output" 2>"$WORK_DIR/policies-wait.err" &&
       grep -Fq -- "\"name\": \"$group\"" "$output" &&
       grep -Fq -- "\"$option\"" "$output"; then
       return 0
@@ -236,9 +236,9 @@ section "write fixture"
 write_fixture
 printf 'config: %s\n' "${CONFIG#$ROOT/}"
 
-section "build omg"
-build_omg
-printf 'binary: %s\n' "${OMG_BIN#$ROOT/}"
+section "build opensurge"
+build_opensurge
+printf 'binary: %s\n' "${OPENSURGE_BIN#$ROOT/}"
 
 section "start egress probe"
 start_egress_probe
@@ -246,13 +246,9 @@ printf 'origin: 127.0.0.1:%s\n' "$EGRESS_ORIGIN_PORT"
 printf 'proxy: 127.0.0.1:%s\n' "$EGRESS_PROXY_PORT"
 
 section "validate mihomo config"
-"$OMG_BIN" validate-mihomo --config "$CONFIG" --format json
+"$OPENSURGE_BIN" validate-mihomo --config "$CONFIG" --format json
 assert_file_contains "$MIHOMO_CONFIG" "store-selected: true"
 assert_file_contains "$MIHOMO_CONFIG" 'proxies: ["demo-proxy", DIRECT]'
-assert_file_contains "$MIHOMO_CONFIG" "name: open-surge/mac-global"
-assert_file_contains "$MIHOMO_CONFIG" "name: open-surge/mac-mode-tcp"
-assert_file_contains "$MIHOMO_CONFIG" "name: open-surge/mac-mode-udp"
-assert_file_contains "$MIHOMO_CONFIG" "AND,((IN-TYPE,SOCKS/HTTP),(SRC-IP-CIDR,127.0.0.0/8),(NETWORK,TCP)),open-surge/mac-mode-tcp"
 assert_file_contains "$MIHOMO_CONFIG" "name: device/integration-dedicated/default"
 assert_file_contains "$MIHOMO_CONFIG" "AND,((SRC-IP-CIDR,192.168.50.101/32),(IP-CIDR,192.168.0.0/16)),DIRECT"
 assert_file_contains "$MIHOMO_CONFIG" "SRC-IP-CIDR,192.168.50.101/32,device/integration-dedicated/default"
@@ -266,39 +262,14 @@ start_mihomo "initial start"
 wait_for_policy_option Proxy remote-provider-proxy
 
 section "list policies"
-"$OMG_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-before.json"
+"$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-before.json"
 cat "$WORK_DIR/policies-before.json"
 assert_file_contains "$WORK_DIR/policies-before.json" '"name": "Proxy"'
 assert_file_contains "$WORK_DIR/policies-before.json" '"selected": "demo-proxy"'
 assert_file_contains "$WORK_DIR/policies-before.json" '"DIRECT"'
 assert_file_contains "$WORK_DIR/policies-before.json" '"remote-provider-proxy"'
-if grep -Fq "open-surge/mac-" "$WORK_DIR/policies-before.json"; then
-  echo "generic policies exposed local-routing internal groups or options" >&2
-  cat "$WORK_DIR/policies-before.json" >&2
-  exit 1
-fi
-
-section "local Mac routing controller"
-"$OMG_BIN" local-routing --config "$CONFIG" --format json >"$WORK_DIR/local-routing-rule.json"
-cat "$WORK_DIR/local-routing-rule.json"
-assert_file_contains "$WORK_DIR/local-routing-rule.json" '"mode": "rule"'
-assert_file_contains "$WORK_DIR/local-routing-rule.json" '"loopback_explicit_proxy"'
-
-"$OMG_BIN" local-routing-set --config "$CONFIG" --mode global --policy egress-proxy --format json >"$WORK_DIR/local-routing-global.json"
-cat "$WORK_DIR/local-routing-global.json"
-assert_file_contains "$WORK_DIR/local-routing-global.json" '"mode": "global"'
-assert_file_contains "$WORK_DIR/local-routing-global.json" '"selected": "egress-proxy"'
-assert_file_contains "$WORK_DIR/local-routing-global.json" '"udp_behavior": "reject"'
-
-if "$OMG_BIN" policy-select --config "$CONFIG" --group GLOBAL --policy open-surge/mac-global --format json >"$WORK_DIR/local-routing-indirect.out" 2>"$WORK_DIR/local-routing-indirect.err"; then
-  echo "generic GLOBAL selector accepted an internal local-routing group" >&2
-  cat "$WORK_DIR/local-routing-indirect.out" >&2
-  exit 1
-fi
-assert_file_contains "$WORK_DIR/local-routing-indirect.err" 'is not a member of group \"GLOBAL\"'
-
 section "reject unknown policy"
-if "$OMG_BIN" policy-select --config "$CONFIG" --group Proxy --policy Missing --format json >"$WORK_DIR/policy-select-invalid.out" 2>"$WORK_DIR/policy-select-invalid.json"; then
+if "$OPENSURGE_BIN" policy-select --config "$CONFIG" --group Proxy --policy Missing --format json >"$WORK_DIR/policy-select-invalid.out" 2>"$WORK_DIR/policy-select-invalid.json"; then
   echo "policy-select accepted an unknown policy" >&2
   cat "$WORK_DIR/policy-select-invalid.out" >&2
   exit 1
@@ -310,12 +281,12 @@ assert_file_contains "$WORK_DIR/policy-select-invalid.json" 'policy \"Missing\" 
 assert_file_contains "$WORK_DIR/policy-select-invalid.json" 'demo-proxy, DIRECT'
 
 section "select DIRECT"
-"$OMG_BIN" policy-select --config "$CONFIG" --group Proxy --policy DIRECT --format json >"$WORK_DIR/policy-select.json"
+"$OPENSURGE_BIN" policy-select --config "$CONFIG" --group Proxy --policy DIRECT --format json >"$WORK_DIR/policy-select.json"
 cat "$WORK_DIR/policy-select.json"
 assert_file_contains "$WORK_DIR/policy-select.json" '"selected": "DIRECT"'
 
 section "verify selected policy"
-"$OMG_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-after.json"
+"$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-after.json"
 cat "$WORK_DIR/policies-after.json"
 assert_file_contains "$WORK_DIR/policies-after.json" '"selected": "DIRECT"'
 
@@ -325,20 +296,12 @@ start_mihomo "restart after policy-select"
 wait_for_policy_option Proxy remote-provider-proxy
 
 section "verify restored policy"
-"$OMG_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-restored.json"
+"$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-restored.json"
 cat "$WORK_DIR/policies-restored.json"
 assert_file_contains "$WORK_DIR/policies-restored.json" '"name": "Proxy"'
 assert_file_contains "$WORK_DIR/policies-restored.json" '"selected": "DIRECT"'
 assert_file_contains "$WORK_DIR/policies-restored.json" '"DIRECT"'
 assert_file_contains "$WORK_DIR/policies-restored.json" '"remote-provider-proxy"'
-"$OMG_BIN" local-routing --config "$CONFIG" --format json >"$WORK_DIR/local-routing-restart-restored.json"
-assert_file_contains "$WORK_DIR/local-routing-restart-restored.json" '"mode": "global"'
-assert_file_contains "$WORK_DIR/local-routing-restart-restored.json" '"selected": "egress-proxy"'
-"$OMG_BIN" local-routing-set --config "$CONFIG" --mode direct --format json >"$WORK_DIR/local-routing-direct.json"
-assert_file_contains "$WORK_DIR/local-routing-direct.json" '"mode": "direct"'
-"$OMG_BIN" local-routing-set --config "$CONFIG" --mode rule --format json >"$WORK_DIR/local-routing-restored.json"
-assert_file_contains "$WORK_DIR/local-routing-restored.json" '"mode": "rule"'
-
 section "verify policy egress switch"
 curl --noproxy '' --proxy "http://127.0.0.1:$MIXED_PORT" --fail --silent --show-error --max-time 5 \
   "http://127.0.0.1:$EGRESS_ORIGIN_PORT/egress-direct" >"$WORK_DIR/egress-direct.out"
@@ -351,7 +314,7 @@ if [[ -s "$WORK_DIR/egress/proxy.log" ]]; then
   exit 1
 fi
 
-"$OMG_BIN" policy-select --config "$CONFIG" --group EgressSwitch --policy egress-proxy --format json >"$WORK_DIR/policy-egress-proxy.json"
+"$OPENSURGE_BIN" policy-select --config "$CONFIG" --group EgressSwitch --policy egress-proxy --format json >"$WORK_DIR/policy-egress-proxy.json"
 cat "$WORK_DIR/policy-egress-proxy.json"
 assert_file_contains "$WORK_DIR/policy-egress-proxy.json" '"group": "EgressSwitch"'
 assert_file_contains "$WORK_DIR/policy-egress-proxy.json" '"selected": "egress-proxy"'
@@ -370,23 +333,23 @@ assert_file_contains "$MIHOMO_LOG" "SrcIPCIDR,127.0.0.0/8"
 assert_file_contains "$MIHOMO_LOG" "IPCIDR,127.0.0.0/8"
 assert_file_contains "$MIHOMO_LOG" "using DIRECT"
 
-"$OMG_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-egress.json"
+"$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-egress.json"
 cat "$WORK_DIR/policies-egress.json"
 assert_file_contains "$WORK_DIR/policies-egress.json" '"name": "EgressSwitch"'
 assert_file_contains "$WORK_DIR/policies-egress.json" '"selected": "egress-proxy"'
 
-"$OMG_BIN" policy-select --config "$CONFIG" --group EgressSwitch --policy DIRECT --format json >"$WORK_DIR/policy-egress-direct.json"
+"$OPENSURGE_BIN" policy-select --config "$CONFIG" --group EgressSwitch --policy DIRECT --format json >"$WORK_DIR/policy-egress-direct.json"
 cat "$WORK_DIR/policy-egress-direct.json"
 assert_file_contains "$WORK_DIR/policy-egress-direct.json" '"group": "EgressSwitch"'
 assert_file_contains "$WORK_DIR/policy-egress-direct.json" '"selected": "DIRECT"'
 
 section "connections"
-"$OMG_BIN" connections --config "$CONFIG" --format json >"$WORK_DIR/connections.json"
+"$OPENSURGE_BIN" connections --config "$CONFIG" --format json >"$WORK_DIR/connections.json"
 cat "$WORK_DIR/connections.json"
 assert_file_contains "$WORK_DIR/connections.json" '"connections"'
 
 section "providers"
-"$OMG_BIN" providers --config "$CONFIG" --format json >"$WORK_DIR/providers.json"
+"$OPENSURGE_BIN" providers --config "$CONFIG" --format json >"$WORK_DIR/providers.json"
 cat "$WORK_DIR/providers.json"
 assert_file_contains "$WORK_DIR/providers.json" '"proxy_providers"'
 assert_file_contains "$WORK_DIR/providers.json" '"name": "demo-provider"'
@@ -397,12 +360,6 @@ assert_file_contains "$WORK_DIR/providers.json" '"name": "remote-provider"'
 assert_file_contains "$WORK_DIR/providers.json" '"name": "remote-provider-proxy"'
 assert_file_contains "$WORK_DIR/providers.json" '"rule_providers"'
 assert_file_contains "$WORK_DIR/egress/origin.log" "GET /remote-provider.yaml"
-if grep -Fq '"name": "open-surge/mac-' "$WORK_DIR/providers.json"; then
-  echo "generic providers exposed local-routing internal groups" >&2
-  cat "$WORK_DIR/providers.json" >&2
-  exit 1
-fi
-
 section "update remote provider"
 cat >"$REMOTE_PROVIDER" <<'EOF'
 proxies:
@@ -411,18 +368,18 @@ proxies:
     server: "127.0.0.1"
     port: 18084
 EOF
-"$OMG_BIN" provider-update --config "$CONFIG" --provider remote-provider --format json >"$WORK_DIR/remote-provider-update.json"
+"$OPENSURGE_BIN" provider-update --config "$CONFIG" --provider remote-provider --format json >"$WORK_DIR/remote-provider-update.json"
 cat "$WORK_DIR/remote-provider-update.json"
 assert_file_contains "$WORK_DIR/remote-provider-update.json" '"provider": "remote-provider"'
 assert_file_contains "$WORK_DIR/remote-provider-update.json" '"updated": true'
 assert_file_contains "$WORK_DIR/remote-provider-update.json" '"name": "remote-provider-updated"'
 
-"$OMG_BIN" providers --config "$CONFIG" --format json >"$WORK_DIR/remote-providers-updated.json"
+"$OPENSURGE_BIN" providers --config "$CONFIG" --format json >"$WORK_DIR/remote-providers-updated.json"
 cat "$WORK_DIR/remote-providers-updated.json"
 assert_file_contains "$WORK_DIR/remote-providers-updated.json" '"name": "remote-provider"'
 assert_file_contains "$WORK_DIR/remote-providers-updated.json" '"name": "remote-provider-updated"'
 
-"$OMG_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-remote-provider-updated.json"
+"$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-remote-provider-updated.json"
 cat "$WORK_DIR/policies-remote-provider-updated.json"
 assert_file_contains "$WORK_DIR/policies-remote-provider-updated.json" '"selected": "DIRECT"'
 assert_file_contains "$WORK_DIR/policies-remote-provider-updated.json" '"remote-provider-updated"'
@@ -435,25 +392,25 @@ proxies:
     server: "127.0.0.1"
     port: 18082
 EOF
-"$OMG_BIN" provider-update --config "$CONFIG" --provider demo-provider --format json >"$WORK_DIR/provider-update.json"
+"$OPENSURGE_BIN" provider-update --config "$CONFIG" --provider demo-provider --format json >"$WORK_DIR/provider-update.json"
 cat "$WORK_DIR/provider-update.json"
 assert_file_contains "$WORK_DIR/provider-update.json" '"provider": "demo-provider"'
 assert_file_contains "$WORK_DIR/provider-update.json" '"updated": true'
 assert_file_contains "$WORK_DIR/provider-update.json" '"name": "provider-updated"'
 
-"$OMG_BIN" providers --config "$CONFIG" --format json >"$WORK_DIR/providers-updated.json"
+"$OPENSURGE_BIN" providers --config "$CONFIG" --format json >"$WORK_DIR/providers-updated.json"
 cat "$WORK_DIR/providers-updated.json"
 assert_file_contains "$WORK_DIR/providers-updated.json" '"name": "demo-provider"'
 assert_file_contains "$WORK_DIR/providers-updated.json" '"name": "provider-updated"'
 
-"$OMG_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-provider-updated.json"
+"$OPENSURGE_BIN" policies --config "$CONFIG" --format json >"$WORK_DIR/policies-provider-updated.json"
 cat "$WORK_DIR/policies-provider-updated.json"
 assert_file_contains "$WORK_DIR/policies-provider-updated.json" '"selected": "DIRECT"'
 assert_file_contains "$WORK_DIR/policies-provider-updated.json" '"provider-updated"'
 assert_file_contains "$WORK_DIR/policies-provider-updated.json" '"remote-provider-updated"'
 
 section "snapshot"
-"$OMG_BIN" snapshot --config "$CONFIG" --tail 5 --format json >"$WORK_DIR/snapshot.json"
+"$OPENSURGE_BIN" snapshot --config "$CONFIG" --tail 5 --format json >"$WORK_DIR/snapshot.json"
 cat "$WORK_DIR/snapshot.json"
 assert_file_contains "$WORK_DIR/snapshot.json" '"status"'
 assert_file_contains "$WORK_DIR/snapshot.json" '"doctor"'

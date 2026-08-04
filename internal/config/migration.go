@@ -44,7 +44,7 @@ func MigrateMacConfig(source []byte) ([]byte, []string, error) {
 		notes = append(notes, "map management.listen to the Linux LAN IPv4 address if the default does not match the host")
 	} else if legacyManagementListen(listen) {
 		management["listen"] = defaultManagementListen
-		notes = append(notes, "map management.listen from the macOS loopback default to a reachable Linux IPv4 address")
+		notes = append(notes, "map management.listen from the legacy loopback default to a reachable Linux IPv4 address")
 	}
 	setMigrationDefault(management, "tls_cert_file", "")
 	setMigrationDefault(management, "tls_key_file", "")
@@ -68,10 +68,10 @@ func MigrateMacConfig(source []byte) ([]byte, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if device, ok := migrationString(transparent["tun_device"]); !ok || strings.TrimSpace(device) == "" || isMacInterface(device) {
+	if device, ok := migrationString(transparent["tun_device"]); !ok || strings.TrimSpace(device) == "" || isLegacyInterface(device) {
 		transparent["tun_device"] = "opensurge-tun"
 		if ok {
-			notes = append(notes, "map transparent.tun_device from the macOS utun device to opensurge-tun")
+			notes = append(notes, "map transparent.tun_device from the legacy virtual device to opensurge-tun")
 		}
 	}
 	setMigrationDefault(transparent, "mode", TransparentModeOff)
@@ -119,13 +119,13 @@ func mapLegacyInterface(mapping map[string]any, key, linuxDefault string, notes 
 		*notes = append(*notes, fmt.Sprintf("map %s to the Linux interface that owns the gateway path", "gateway."+key))
 		return
 	}
-	if isMacInterface(value) {
+	if isLegacyInterface(value) {
 		mapping[key] = linuxDefault
-		*notes = append(*notes, fmt.Sprintf("map %s from macOS interface %q to the Linux interface that owns the gateway path", "gateway."+key, value))
+		*notes = append(*notes, fmt.Sprintf("map %s from legacy interface %q to the Linux interface that owns the gateway path", "gateway."+key, value))
 	}
 }
 
-func isMacInterface(value string) bool {
+func isLegacyInterface(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if strings.HasPrefix(value, "en") {
 		suffix := value[2:]
