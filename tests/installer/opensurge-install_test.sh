@@ -49,6 +49,14 @@ assert_contains() {
 	grep -F -- "$expected" "$file" >/dev/null || fail "missing text in $file: $expected"
 }
 
+assert_command_not_invoked() {
+	local file=$1
+	local command_name=$2
+	if test -f "$file" && grep -E "^${command_name}([[:space:]]|$)" "$file" >/dev/null; then
+		fail "unexpected command in $file: $command_name"
+	fi
+}
+
 assert_command_count() {
 	local expected=$1
 	local count
@@ -66,6 +74,31 @@ printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
 exit 0
 EOF
 	chmod 0755 "$fake_bin/$command_name"
+}
+
+make_fake_apt_get() {
+	cat >"$fake_bin/apt-get" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+if test "${1:-}" = update; then
+	case "${OPENSURGE_INSTALLER_TEST_POLICY_MUTATION:-}" in
+		modified)
+			printf '#!/bin/sh\n# modified after installer creation\nexit 0\n' >"$OPENSURGE_INSTALLER_BIN_DIR/policy-rc.d"
+			chmod 0755 "$OPENSURGE_INSTALLER_BIN_DIR/policy-rc.d"
+			;;
+		replaced)
+			replacement="$OPENSURGE_INSTALLER_BIN_DIR/policy-rc.d.replacement"
+			printf '#!/bin/sh\n# replacement user policy\nexit 0\n' >"$replacement"
+			chmod 0755 "$replacement"
+			mv "$replacement" "$OPENSURGE_INSTALLER_BIN_DIR/policy-rc.d"
+			;;
+	esac
+fi
+exit 0
+EOF
+	chmod 0755 "$fake_bin/apt-get"
 }
 
 make_fake_dpkg() {
@@ -156,6 +189,7 @@ run_installer() {
 		OPENSURGE_INSTALLER_COMMANDS="$captured_commands" \
 		OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL="$release_base_url" \
 		OPENSURGE_INSTALLER_TEST_TRANSFER_PREREQUISITES="$transfer_prerequisites" \
+		OPENSURGE_INSTALLER_TEST_POLICY_MUTATION="${OPENSURGE_TEST_POLICY_MUTATION:-}" \
 		OPENSURGE_TEST_SECRET="$test_secret" \
 		PATH="$fake_bin:$PATH" \
 		bash "$installer" "$@" >"$captured_stdout" 2>"$captured_stderr"
@@ -171,9 +205,9 @@ expect_fail() {
 
 	assert_not_contains "$captured_commands" 'apt-get install'
 	assert_not_contains "$captured_commands" 'dpkg -i'
-	assert_not_contains "$captured_commands" 'systemctl'
-	assert_not_contains "$captured_commands" 'ip'
-	assert_not_contains "$captured_commands" 'ss'
+	assert_command_not_invoked "$captured_commands" systemctl
+	assert_command_not_invoked "$captured_commands" ip
+	assert_command_not_invoked "$captured_commands" ss
 	assert_not_contains "$captured_stdout" "$test_secret"
 	assert_not_contains "$captured_stderr" "$test_secret"
 	assert_not_contains "$installer_log" "$test_secret"
@@ -274,6 +308,30 @@ expect_transfer_bootstrap_is_no_autostart_and_redacted() {
 	assert_not_contains "$installer_log" "$test_secret"
 }
 
+expect_transfer_bootstrap_preserves_modified_temporary_policy() {
+	rm -f "$fake_bin/policy-rc.d"
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	if ! OPENSURGE_TEST_TRANSFER_PREREQUISITES=missing OPENSURGE_TEST_POLICY_MUTATION=modified run_installer --version v1.2.3; then
+		fail 'installer rejected a modified temporary package service policy in the fixture'
+	fi
+	assert_contains "$fake_bin/policy-rc.d" '# modified after installer creation'
+	assert_not_contains "$installer_log" "$test_secret"
+}
+
+expect_transfer_bootstrap_preserves_replaced_temporary_policy() {
+	rm -f "$fake_bin/policy-rc.d"
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	if ! OPENSURGE_TEST_TRANSFER_PREREQUISITES=missing OPENSURGE_TEST_POLICY_MUTATION=replaced run_installer --version v1.2.3; then
+		fail 'installer rejected a replacement package service policy in the fixture'
+	fi
+	assert_contains "$fake_bin/policy-rc.d" '# replacement user policy'
+	assert_not_contains "$installer_log" "$test_secret"
+}
+
 expect_transfer_bootstrap_preserves_existing_policy() {
 	printf '#!/bin/sh\n# user policy\nexit 0\n' >"$fake_bin/policy-rc.d"
 	chmod 0755 "$fake_bin/policy-rc.d"
@@ -288,13 +346,31 @@ expect_transfer_bootstrap_preserves_existing_policy() {
 	assert_not_contains "$installer_log" "$test_secret"
 }
 
+expect_offline_final_symlink_uses_target_and_adjacent_checksum() {
+	local target_dir="$test_root/offline-target"
+	local target_deb="$target_dir/opensurge_1.2.3_amd64.deb"
+	local canonical_target_deb
+	local link_dir="$test_root/offline-links"
+	local linked_deb="$link_dir/opensurge_1.2.3_amd64.deb"
+
+	mkdir -p "$target_dir" "$link_dir"
+	cp "$fixture_deb" "$target_deb"
+	sha256sum "$target_deb" | awk '{print $1 "  opensurge_1.2.3_amd64.deb"}' >"$target_dir/SHA256SUMS"
+	ln -s '../offline-target/opensurge_1.2.3_amd64.deb' "$linked_deb"
+	canonical_target_deb="$(cd -P "$target_dir" && pwd)/opensurge_1.2.3_amd64.deb"
+	expect_success --deb "$linked_deb"
+	assert_contains "$captured_commands" "$canonical_target_deb"
+	assert_not_contains "$captured_commands" "$linked_deb"
+}
+
 mkdir -p "$fake_bin"
 : >"$captured_commands"
 : >"$fake_tty"
 chmod 0600 "$fake_tty"
-for command_name in apt-get systemctl ip ss; do
+for command_name in systemctl ip ss; do
 	make_fake_command "$command_name"
 done
+make_fake_apt_get
 make_fake_dpkg
 make_fake_dpkg_deb
 start_release_fixture
@@ -342,6 +418,9 @@ expect_fail_when_dpkg_deb_arch_is_wrong
 expect_fail_when_offline_checksum_is_missing
 expect_fail_when_online_url_is_not_https
 expect_transfer_bootstrap_is_no_autostart_and_redacted
+expect_transfer_bootstrap_preserves_modified_temporary_policy
+expect_transfer_bootstrap_preserves_replaced_temporary_policy
 expect_transfer_bootstrap_preserves_existing_policy
+expect_offline_final_symlink_uses_target_and_adjacent_checksum
 
 echo "opensurge installer release asset tests passed"

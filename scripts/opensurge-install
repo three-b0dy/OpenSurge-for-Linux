@@ -20,9 +20,11 @@ release_repository_url=$RELEASE_REPOSITORY_URL
 allow_insecure_test_release=0
 download_dir=''
 temporary_policy_path=''
+temporary_policy_identity=''
+temporary_policy_contents=''
 
 cleanup() {
-	if test -n "$temporary_policy_path"; then
+	if test -n "$temporary_policy_path" && temporary_policy_is_ours; then
 		rm -f -- "$temporary_policy_path"
 	fi
 	if test -n "$download_dir"; then
@@ -160,13 +162,29 @@ require_root_and_tty() {
 
 canonical_regular_file() {
 	local input=$1
+	local candidate
 	local directory
 	local filename
+	local link_target
+	local hops
 
-	test -f "$input" && test -r "$input" || die "regular readable file is required: $input"
 	directory=$(cd -P -- "$(dirname -- "$input")" && pwd) || die "cannot canonicalize file: $input"
 	filename=$(basename -- "$input")
-	printf '%s/%s' "$directory" "$filename"
+	candidate="$directory/$filename"
+	for ((hops = 0; hops < 40; hops++)); do
+		test -L "$candidate" || break
+		link_target=$(readlink "$candidate") || die "cannot resolve symbolic link: $input"
+		case "$link_target" in
+			/*) candidate=$link_target ;;
+			*) candidate="$(dirname -- "$candidate")/$link_target" ;;
+		esac
+		directory=$(cd -P -- "$(dirname -- "$candidate")" && pwd) || die "cannot canonicalize file: $input"
+		filename=$(basename -- "$candidate")
+		candidate="$directory/$filename"
+	done
+	test ! -L "$candidate" || die "too many symbolic links: $input"
+	test -f "$candidate" && test -r "$candidate" || die "regular readable file is required: $input"
+	printf '%s' "$candidate"
 }
 
 determine_architecture() {
@@ -196,15 +214,45 @@ transfer_prerequisites_available() {
 	command -v curl >/dev/null 2>&1 && test -r /etc/ssl/certs/ca-certificates.crt
 }
 
+policy_file_identity() {
+	local policy_path=$1
+
+	if stat -c '%u:%a:%d:%i' "$policy_path" 2>/dev/null; then
+		return
+	fi
+	stat -f '%u:%Lp:%d:%i' "$policy_path" 2>/dev/null
+}
+
+temporary_policy_is_ours() {
+	local current_identity
+	local current_contents
+
+	test -f "$temporary_policy_path" && ! test -L "$temporary_policy_path" || return 1
+	current_identity=$(policy_file_identity "$temporary_policy_path") || return 1
+	test "$current_identity" = "$temporary_policy_identity" || return 1
+	case "$current_identity" in
+		"$EUID:755:"*) ;;
+		*) return 1 ;;
+	esac
+	current_contents=$(cat "$temporary_policy_path") || return 1
+	test "$current_contents" = "$temporary_policy_contents"
+}
+
 bootstrap_transfer_prerequisites() {
 	local policy_path="$bin_dir/policy-rc.d"
 
 	if test -e "$policy_path" || test -L "$policy_path"; then
 		log 'existing policy-rc.d controls package service policy during transfer bootstrap'
 	else
-		printf '#!/bin/sh\nexit 101\n' >"$policy_path" || die 'cannot create temporary no-autostart policy'
+		temporary_policy_contents=$'#!/bin/sh\n# OpenSurge installer temporary no-autostart policy\nexit 101'
+		printf '%s\n' "$temporary_policy_contents" >"$policy_path" || die 'cannot create temporary no-autostart policy'
 		chmod 0755 "$policy_path" || die 'cannot protect temporary no-autostart policy'
 		temporary_policy_path=$policy_path
+		temporary_policy_identity=$(policy_file_identity "$policy_path") || die 'cannot identify temporary no-autostart policy'
+		case "$temporary_policy_identity" in
+			"$EUID:755:"*) ;;
+			*) die 'cannot protect temporary no-autostart policy' ;;
+		esac
 	fi
 
 	log 'bootstrapping curl and CA certificates before release retrieval'
