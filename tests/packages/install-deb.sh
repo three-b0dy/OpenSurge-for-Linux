@@ -37,6 +37,14 @@ assert_not_contains() {
 	fi
 }
 
+assert_secret_not_in_file() {
+	local file=$1
+	local secret=$2
+	if [[ -f "$file" ]] && grep -F -- "$secret" "$file" >/dev/null; then
+		fail "administrator password was exposed in $file"
+	fi
+}
+
 assert_file_mode() {
 	local path=$1
 	local expected=$2
@@ -178,6 +186,27 @@ EOF
 	chmod 0755 "$fixture_bin/ss"
 }
 
+make_fake_curl() {
+	cat >"$fixture_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'curl' >>"$OPENSURGE_PACKAGE_COMMAND_LOG"
+printf ' %q' "$@" >>"$OPENSURGE_PACKAGE_COMMAND_LOG"
+printf '\n' >>"$OPENSURGE_PACKAGE_COMMAND_LOG"
+
+for argument in "$@"; do
+	case "$argument" in
+		*/api/v1/auth/status)
+			printf '%s\n' '{"initialized":true,"authenticated":false}'
+			exit 0
+			;;
+	esac
+done
+exit 1
+EOF
+	chmod 0755 "$fixture_bin/curl"
+}
+
 make_fake_systemctl() {
 	cat >"$fixture_bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
@@ -232,7 +261,10 @@ case "${1:-}" in
 							state="disabled-${state#*-}"
 							test "$now" -eq 0 || state=disabled-inactive
 							;;
-						enable) state="enabled-${state#*-}" ;;
+						enable)
+							state="enabled-${state#*-}"
+							test "$now" -eq 0 || state=enabled-active
+							;;
 						start) state="${state%-*}-active" ;;
 						stop) state="${state%-*}-inactive" ;;
 					esac
@@ -342,21 +374,38 @@ assert_controlled_install() {
 	[[ -x /usr/bin/opensurge-setup ]] || fail 'controlled installer did not install opensurge-setup'
 	[[ -x /usr/lib/opensurge/mihomo ]] || fail 'controlled installer did not install mihomo'
 	[[ -f /lib/systemd/system/opensurge-gateway.socket ]] || fail 'controlled installer did not install gateway socket'
-	[[ ! -e /var/lib/opensurge/admin.json ]] || fail 'package initialized an administrator unexpectedly'
+	[[ -f /var/lib/opensurge/admin.json && ! -L /var/lib/opensurge/admin.json ]] || fail 'installer did not initialize an administrator'
+	assert_file_mode /var/lib/opensurge/admin.json 600
 	assert_file_mode /var/lib/opensurge/install-state/manifest 600
 	assert_service_state dnsmasq.service disabled-inactive
+	assert_service_state opensurge-gateway.socket enabled-active
+	assert_service_state opensurge-control.service enabled-active
 	[[ -f "$apt_suppressed" ]] || fail 'dependency installation did not prove policy-rc.d suppression'
 	assert_not_contains "$command_log" 'systemctl start dnsmasq.service'
-	assert_not_contains "$command_log" 'systemctl enable opensurge-'
-	assert_not_contains "$command_log" 'systemctl start opensurge-'
+	assert_contains "$command_log" 'systemctl enable --now opensurge-gateway.socket opensurge-control.service'
+	assert_contains "$command_log" 'curl --fail --silent --show-error --insecure https://192.0.2.10:61767/api/v1/auth/status'
 	if [[ -d /run/opensurge/installer ]] && find /run/opensurge/installer -mindepth 1 -print -quit | grep -q .; then
 		fail 'installer marker survived package-manager completion'
 	fi
 }
 
+assert_generated_password_is_tty_only() {
+	local password
+	local password_count
+
+	password=$(sed -n '2p' "$fake_tty")
+	[[ $password =~ ^[A-Za-z0-9_-]{12,128}$ ]] || fail 'installer did not display a URL-safe one-time password on its controlling TTY'
+	password_count=$(grep -F -c -- "$password" "$fake_tty" || true)
+	[[ $password_count == 1 ]] || fail 'one-time password was not displayed exactly once on the controlling TTY'
+	for file in "$installer_stdout" "$installer_stderr" "$installer_log" "$command_log" /etc/opensurge/config.yaml /var/lib/opensurge/install-state/manifest; do
+		assert_secret_not_in_file "$file" "$password"
+	done
+}
+
 test_remove_restores_only_owned_state() {
 	local original_target='../run/systemd/resolve/opensurge-package-test-resolv.conf'
 	local managed_resolver=$'nameserver 9.9.9.9\n'
+	local administrator_digest
 
 	prepare_resolver_symlink "$managed_resolver"
 	set_service_state systemd-resolved.service enabled-active
@@ -367,6 +416,8 @@ test_remove_restores_only_owned_state() {
 		fail 'controlled installer fixture failed for remove case'
 	}
 	assert_controlled_install
+	assert_generated_password_is_tty_only
+	administrator_digest=$(sha256sum /var/lib/opensurge/admin.json)
 	[[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]] || fail 'installer did not take resolver ownership'
 
 	: >"$command_log"
@@ -376,6 +427,7 @@ test_remove_restores_only_owned_state() {
 	}
 	[[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]] || fail 'upgrade restored resolver mid-transaction'
 	[[ -f /var/lib/opensurge/install-state/manifest ]] || fail 'upgrade removed ownership manifest'
+	[[ $(sha256sum /var/lib/opensurge/admin.json) == "$administrator_digest" ]] || fail 'upgrade overwrote the existing administrator state'
 	assert_not_contains "$command_log" 'systemctl enable systemd-resolved.service'
 	assert_not_contains "$command_log" 'systemctl start systemd-resolved.service'
 
@@ -543,6 +595,7 @@ make_account_tools
 make_fake_ip
 make_fake_ss
 make_fake_systemctl
+make_fake_curl
 
 expected_package=opensurge
 [[ $(dpkg-deb -f "$package" Package) == "$expected_package" ]] || fail 'unexpected package name'

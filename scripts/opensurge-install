@@ -44,6 +44,7 @@ dnsmasq_was_enabled=0
 dnsmasq_was_active=0
 resolv_conf_backup_exists=0
 resolv_conf_kind=absent
+control_status_url=''
 
 cleanup() {
 	local status=$?
@@ -549,6 +550,123 @@ EOF
 	chmod 0640 "$config_path" || die 'cannot set OpenSurge configuration mode'
 	opensurge config validate --config "$config_path" || die 'generated OpenSurge configuration did not validate'
 	log "generated fresh $mode configuration at $config_path"
+}
+
+administrator_state_path() {
+	printf '%s' "$state_dir/admin.json"
+}
+
+administrator_is_initialized() {
+	local admin_path
+
+	admin_path=$(administrator_state_path)
+	test -e "$admin_path" || test -L "$admin_path"
+}
+
+generate_installer_password() {
+	local password
+
+	if test "${OPENSURGE_INSTALLER_TEST:-}" = 1 && test -n "${OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD:-}"; then
+		password=$OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD
+	else
+		password=$(LC_ALL=C od -An -N 32 -tx1 /dev/urandom | tr -d ' \n') || \
+			die 'cannot generate the administrator password'
+	fi
+	[[ $password =~ ^[A-Za-z0-9_-]+$ ]] && test "${#password}" -ge 12 && test "${#password}" -le 256 || \
+		die 'cannot generate a URL-safe administrator password'
+	printf '%s' "$password"
+}
+
+initialize_administrator() {
+	local admin_password
+	local setup_status
+	local setup_binary="$installer_root/usr/bin/opensurge-setup"
+
+	if administrator_is_initialized; then
+		log 'preserved existing OpenSurge administrator state'
+		return
+	fi
+	if test -e /dev/fd/9; then
+		die 'cannot reserve installer password pipe descriptor'
+	fi
+
+	admin_password=$(generate_installer_password)
+	# The deterministic test-only source must not be inherited by setup either.
+	unset OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD
+	printf '%s\n' 'OpenSurge created the local admin account. Change this one-time password immediately in the Web UI:' >>"$tty_path"
+	printf '%s\n' "$admin_password" >>"$tty_path"
+	exec 9< <(printf '%s\n' "$admin_password")
+	test -x "$setup_binary" || die 'installed OpenSurge setup binary is unavailable'
+	if "$setup_binary" init --username admin --password-fd 9; then
+		setup_status=0
+	else
+		setup_status=$?
+	fi
+	unset admin_password
+	exec 9<&-
+	test "$setup_status" -eq 0 || die 'cannot initialize the OpenSurge administrator account'
+	administrator_is_initialized || die 'OpenSurge administrator initialization did not create state'
+	log 'initialized the OpenSurge administrator account'
+}
+
+management_status_url() {
+	local config_path="$etc_dir/opensurge/config.yaml"
+	local listener
+	local host
+	local port
+
+	listener=$(awk '
+		/^[[:space:]]*management:[[:space:]]*$/ { in_management = 1; next }
+		in_management && /^[^[:space:]]/ { exit }
+		in_management && /^[[:space:]]*listen:[[:space:]]*/ {
+			value = $0
+			sub(/^[[:space:]]*listen:[[:space:]]*/, "", value)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+			print value
+			exit
+		}
+	' "$config_path") || die 'cannot read management listener from OpenSurge configuration'
+	listener=${listener#\"}
+	listener=${listener%\"}
+	listener=${listener#\'}
+	listener=${listener%\'}
+	host=${listener%:*}
+	port=${listener##*:}
+	test -n "$listener" && test "$host" != "$listener" || die 'OpenSurge management listener is invalid'
+	is_unicast_ipv4 "$host" || die 'OpenSurge management listener must use a non-local IPv4 address'
+	[[ $port =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || \
+		die 'OpenSurge management listener port is invalid'
+	printf 'https://%s:%s/api/v1/auth/status' "$host" "$port"
+}
+
+report_control_plane_diagnostics() {
+	systemctl status --no-pager opensurge-gateway.socket opensurge-control.service >&2 || true
+	journalctl --no-pager --lines 50 --unit opensurge-gateway.service --unit opensurge-control.service >&2 || true
+}
+
+start_and_verify_control_plane() {
+	local attempt
+	local attempts=15
+	local status_payload
+
+	control_status_url=$(management_status_url)
+	systemctl enable --now opensurge-gateway.socket opensurge-control.service || \
+		die 'cannot enable and start OpenSurge control services'
+	if test "${OPENSURGE_INSTALLER_TEST:-}" = 1; then
+		attempts=1
+	fi
+	for ((attempt = 1; attempt <= attempts; attempt++)); do
+		if status_payload=$(curl --fail --silent --show-error --insecure "$control_status_url") && \
+			[[ $status_payload == *'"initialized":true'* ]]; then
+			log "verified OpenSurge HTTPS control availability at $control_status_url"
+			return
+		fi
+		if test "$attempt" -lt "$attempts"; then
+			sleep 1
+		fi
+	done
+	report_control_plane_diagnostics
+	die "OpenSurge HTTPS control endpoint did not become available at $control_status_url"
 }
 
 validate_arguments() {
@@ -1475,12 +1593,14 @@ main() {
 	else
 		log "preserved existing OpenSurge configuration at $etc_dir/opensurge/config.yaml"
 	fi
+	initialize_administrator
+	start_and_verify_control_plane
 	if test "$host_state_transaction_started" -eq 1; then
 		install_phase=complete
 		write_install_manifest
 		host_state_transaction_started=0
 	fi
-	printf 'OpenSurge release asset installed.\n' >"$tty_path"
+	printf 'OpenSurge is ready at %s. Sign in as admin and change the one-time password in the Web UI.\n' "$control_status_url" >>"$tty_path"
 }
 
 trap cleanup EXIT

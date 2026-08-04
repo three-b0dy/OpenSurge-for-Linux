@@ -23,12 +23,16 @@ config_path="$test_root/root/etc/opensurge/config.yaml"
 observed_installer_marker="$test_root/observed-installer-marker"
 
 cleanup() {
+	local status=$?
+
+	trap - EXIT
 	if test -n "$fixture_server_pid"; then
 		kill "$fixture_server_pid" 2>/dev/null || true
 		wait "$fixture_server_pid" 2>/dev/null || true
 	fi
 	chmod -R u+w "$test_root" 2>/dev/null || true
 	rm -rf "$test_root"
+	exit "$status"
 }
 trap cleanup EXIT
 
@@ -96,7 +100,9 @@ assert_fake_service_state() {
 	local expected=$2
 	local state_file="$test_root/root/.systemctl-state/$service"
 
-	assert_file_equals "$state_file" "$expected"
+	test -f "$state_file" || fail "missing fake service state: $service"
+	test "$(<"$state_file")" = "$expected" || \
+		fail "state for $service = $(<"$state_file"), want $expected"
 }
 
 assert_manifest() {
@@ -193,6 +199,8 @@ if test "$#" -eq 2 && test "$1" = -i; then
 	if test "${OPENSURGE_INSTALLER_TEST_DPKG_FAIL:-}" = 1; then
 		exit 43
 	fi
+	mkdir -p "$OPENSURGE_INSTALLER_ROOT/usr/bin"
+	ln -sf "$OPENSURGE_INSTALLER_BIN_DIR/opensurge-setup" "$OPENSURGE_INSTALLER_ROOT/usr/bin/opensurge-setup"
 	touch "$OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH"
 fi
 EOF
@@ -315,16 +323,38 @@ case "${1:-}" in
 		printf '%s\n' inactive
 		exit 3
 		;;
-	disable)
-		write_state "disabled-${state#*-}"
-		case " $* " in *' --now '*) write_state 'disabled-inactive' ;; esac
-		if test "${OPENSURGE_INSTALLER_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION:-}" = "$service"; then
-			exit 44
-		fi
+	disable|enable|start|stop)
+		action=$1
+		now=0
+		for argument in "$@"; do
+			test "$argument" = --now && now=1
+		done
+		for target in "$@"; do
+			case "$target" in
+				*.service|*.socket)
+					target_state=$(read_state "$target")
+					case "$action" in
+						disable)
+							target_state="disabled-${target_state#*-}"
+							test "$now" -eq 0 || target_state=disabled-inactive
+							;;
+						enable)
+							target_state="enabled-${target_state#*-}"
+							test "$now" -eq 0 || target_state=enabled-active
+							;;
+						start) target_state="${target_state%-*}-active" ;;
+						stop) target_state="${target_state%-*}-inactive" ;;
+					esac
+					service=$target
+					state_file="$state_directory/${service//\//_}"
+					write_state "$target_state"
+					if test "$action" = disable && test "${OPENSURGE_INSTALLER_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION:-}" = "$target"; then
+						exit 44
+					fi
+					;;
+			esac
+		done
 		;;
-	enable) write_state "enabled-${state#*-}" ;;
-	start) write_state "${state%-*}-active" ;;
-	stop) write_state "${state%-*}-inactive" ;;
 esac
 EOF
 	chmod 0755 "$fake_bin/systemctl"
@@ -343,6 +373,29 @@ case " $* " in
 esac
 EOF
 	chmod 0755 "$fake_bin/ss"
+}
+
+make_fake_curl() {
+	cat >"$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+
+for argument in "$@"; do
+	case "$argument" in
+		*/api/v1/auth/status)
+			if test "${OPENSURGE_INSTALLER_TEST_CONTROL_HEALTH:-available}" = failing; then
+				exit 22
+			fi
+			printf '%s\n' '{"initialized":true,"authenticated":false}'
+			exit 0
+			;;
+	esac
+done
+exec "$OPENSURGE_INSTALLER_TEST_REAL_CURL" "$@"
+EOF
+	chmod 0755 "$fake_bin/curl"
 }
 
 make_fake_readlink() {
@@ -378,6 +431,33 @@ if test "$#" -eq 4 && test "$1" = config && test "$2" = validate && test "$3" = 
 	fi
 EOF
 	chmod 0755 "$fake_bin/opensurge"
+}
+
+make_fake_opensurge_setup() {
+	cat >"$fake_bin/opensurge-setup" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+
+test "$#" -eq 5
+test "$1" = init
+test "$2" = --username
+test "$3" = admin
+test "$4" = --password-fd
+password_fd=$5
+case "$password_fd" in ''|*[!0-9]*) exit 41 ;; esac
+test -p "/dev/fd/$password_fd"
+test -z "${OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD:-}"
+IFS= read -r password <&"$password_fd"
+test "${#password}" -ge 12
+test "${OPENSURGE_INSTALLER_TEST_SETUP_FAIL:-0}" != 1
+mkdir -p "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge"
+printf '%s\n' '{"username":"admin","hash":"fixture"}' >"$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
+chmod 0600 "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
+EOF
+	chmod 0755 "$fake_bin/opensurge-setup"
 }
 
 start_release_fixture() {
@@ -454,6 +534,10 @@ run_installer() {
 		OPENSURGE_INSTALLER_TEST_PORT53_TCP="${OPENSURGE_TEST_PORT53_TCP:-}" \
 		OPENSURGE_INSTALLER_TEST_PORT53_UDP="${OPENSURGE_TEST_PORT53_UDP:-}" \
 		OPENSURGE_INSTALLER_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION="${OPENSURGE_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION:-}" \
+		OPENSURGE_INSTALLER_TEST_SETUP_FAIL="${OPENSURGE_TEST_SETUP_FAIL:-}" \
+		OPENSURGE_INSTALLER_TEST_CONTROL_HEALTH="${OPENSURGE_TEST_CONTROL_HEALTH:-available}" \
+		OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD="$test_secret" \
+		OPENSURGE_INSTALLER_TEST_REAL_CURL="$real_curl" \
 		OPENSURGE_INSTALLER_TEST_IP_SCENARIO="${OPENSURGE_INSTALLER_TEST_IP_SCENARIO:-ens18}" \
 		OPENSURGE_INSTALLER_TEST_CONFIG_PATH="$config_path" \
 		OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH="$test_root/package-phase-complete" \
@@ -494,7 +578,10 @@ expect_success() {
 	: >"$captured_stdout"
 	: >"$captured_stderr"
 	: >"$captured_commands"
-	run_installer "$@" || fail "installer rejected valid invocation: $*"
+	run_installer "$@" || {
+		cat "$captured_stderr" >&2
+		fail "installer rejected valid invocation: $*"
+	}
 	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_contains "$captured_commands" 'dpkg -i'
 	assert_not_contains "$captured_stdout" "$test_secret"
@@ -502,6 +589,87 @@ expect_success() {
 	assert_not_contains "$installer_log" "$test_secret"
 	test -s "$observed_installer_marker" || fail 'dpkg did not receive an installer marker'
 	assert_file_missing "$(<"$observed_installer_marker")"
+	assert_file_equals "$test_root/root/var/lib/opensurge/admin.json" $'{"username":"admin","hash":"fixture"}\n'
+	assert_fake_service_state opensurge-gateway.socket enabled-active
+	assert_fake_service_state opensurge-control.service enabled-active
+}
+
+expect_fresh_administrator_setup_is_pipe_only_and_redacted() {
+	local setup_count
+	local secret_count
+
+	reset_install_root
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	: >"$fake_tty"
+	run_installer --version v1.2.3 || fail 'installer rejected fresh administrator initialization'
+	assert_contains "$captured_commands" 'opensurge-setup init --username admin --password-fd'
+	setup_count=$(grep -F -c -- 'opensurge-setup init --username admin --password-fd' "$captured_commands" || true)
+	test "$setup_count" -eq 1 || fail "expected one setup invocation, got $setup_count"
+	secret_count=$(grep -F -c -- "$test_secret" "$fake_tty" || true)
+	test "$secret_count" -eq 1 || fail "expected generated password exactly once on controlling TTY, got $secret_count"
+	assert_contains "$fake_tty" 'Change this one-time password immediately in the Web UI'
+	assert_not_contains "$captured_stdout" "$test_secret"
+	assert_not_contains "$captured_stderr" "$test_secret"
+	assert_not_contains "$captured_commands" "$test_secret"
+	assert_not_contains "$installer_log" "$test_secret"
+	assert_not_contains "$config_path" "$test_secret"
+	assert_not_contains "$test_root/root/var/lib/opensurge/install-state/manifest" "$test_secret"
+	assert_contains "$captured_commands" 'curl --fail --silent --show-error --insecure https://192.0.2.10:61767/api/v1/auth/status'
+	assert_fake_service_state opensurge-gateway.socket enabled-active
+	assert_fake_service_state opensurge-control.service enabled-active
+}
+
+expect_existing_administrator_skips_setup() {
+	reset_install_root
+	mkdir -p "$test_root/root/var/lib/opensurge"
+	printf '%s\n' '{"username":"admin","hash":"preserved"}' >"$test_root/root/var/lib/opensurge/admin.json"
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	: >"$fake_tty"
+	run_installer --version v1.2.3 || fail 'installer rejected an existing administrator state'
+	assert_command_not_invoked "$captured_commands" opensurge-setup
+	assert_file_equals "$test_root/root/var/lib/opensurge/admin.json" $'{"username":"admin","hash":"preserved"}\n'
+	assert_not_contains "$fake_tty" "$test_secret"
+	assert_contains "$installer_log" 'preserved existing OpenSurge administrator state'
+}
+
+expect_control_health_failure_rolls_back_owned_state() {
+	begin_host_state_case
+	: >"$fake_tty"
+	if OPENSURGE_TEST_RESOLVED_STATE=enabled-active \
+		OPENSURGE_TEST_CONTROL_HEALTH=failing run_installer --version v1.2.3; then
+		fail 'installer accepted an unavailable HTTPS control endpoint'
+	fi
+	assert_contains "$captured_stderr" 'OpenSurge HTTPS control endpoint did not become available'
+	assert_contains "$captured_commands" 'systemctl enable --now opensurge-gateway.socket opensurge-control.service'
+	assert_contains "$captured_commands" 'systemctl status --no-pager opensurge-gateway.socket opensurge-control.service'
+	assert_contains "$captured_commands" 'journalctl --no-pager --lines 50 --unit opensurge-gateway.service --unit opensurge-control.service'
+	assert_file_equals "$test_root/root/etc/resolv.conf" $'nameserver 192.0.2.53\n'
+	assert_file_missing "$test_root/root/var/lib/opensurge/install-state/manifest"
+	assert_not_contains "$captured_stdout" "$test_secret"
+	assert_not_contains "$captured_stderr" "$test_secret"
+	assert_not_contains "$captured_commands" "$test_secret"
+	assert_not_contains "$installer_log" "$test_secret"
+}
+
+expect_setup_failure_rolls_back_owned_state() {
+	begin_host_state_case
+	: >"$fake_tty"
+	if OPENSURGE_TEST_RESOLVED_STATE=enabled-active \
+		OPENSURGE_TEST_SETUP_FAIL=1 run_installer --version v1.2.3; then
+		fail 'installer accepted a failed administrator setup operation'
+	fi
+	assert_contains "$captured_stderr" 'cannot initialize the OpenSurge administrator account'
+	assert_not_contains "$captured_commands" 'systemctl enable --now opensurge-gateway.socket opensurge-control.service'
+	assert_file_equals "$test_root/root/etc/resolv.conf" $'nameserver 192.0.2.53\n'
+	assert_file_missing "$test_root/root/var/lib/opensurge/install-state/manifest"
+	assert_not_contains "$captured_stdout" "$test_secret"
+	assert_not_contains "$captured_stderr" "$test_secret"
+	assert_not_contains "$captured_commands" "$test_secret"
+	assert_not_contains "$installer_log" "$test_secret"
 }
 
 expect_topology_failure() {
@@ -535,7 +703,7 @@ assert_generated_same_lan_config() {
 }
 
 expect_existing_config_is_preserved() {
-	local original=$'gateway:\n  mode: "same_lan"\n# preserve every byte\n'
+	local original=$'management:\n  listen: "192.0.2.10:61767"\n# preserve every byte\n'
 
 	reset_install_root
 	mkdir -p "$(dirname "$config_path")"
@@ -702,7 +870,7 @@ expect_temporary_policy_is_removed_after_dependency_failure() {
 expect_upgrade_skips_port_53_rejection() {
 	begin_host_state_case
 	mkdir -p "$(dirname "$config_path")"
-	printf '%s\n' 'existing config establishes upgrade facts' >"$config_path"
+	printf '%s\n' 'management:' '  listen: "192.0.2.10:61767"' >"$config_path"
 	OPENSURGE_TEST_PORT53_TCP='tcp LISTEN 0 4096 0.0.0.0:53 0.0.0.0:* users:(("opensurge-gateway",pid=77,fd=3))' \
 		run_installer --version v1.2.3 || fail 'upgrade rejected its existing port 53 listener'
 	assert_command_not_invoked "$captured_commands" ss
@@ -740,7 +908,7 @@ expect_failed_resolved_disable_restores_recorded_state() {
 		run_installer --version v1.2.3; then
 		fail 'installer accepted a failed systemd-resolved disable operation'
 	fi
-	assert_fake_service_state systemd-resolved.service $'enabled-active\n'
+	assert_fake_service_state systemd-resolved.service enabled-active
 	assert_contains "$captured_commands" 'systemctl enable systemd-resolved.service'
 	assert_contains "$captured_commands" 'systemctl start systemd-resolved.service'
 	assert_file_missing "$state_root/manifest"
@@ -756,7 +924,7 @@ expect_failed_dnsmasq_disable_restores_recorded_state() {
 		run_installer --version v1.2.3; then
 		fail 'installer accepted a failed generic dnsmasq disable operation'
 	fi
-	assert_fake_service_state dnsmasq.service $'enabled-active\n'
+	assert_fake_service_state dnsmasq.service enabled-active
 	assert_contains "$captured_commands" 'systemctl enable dnsmasq.service'
 	assert_contains "$captured_commands" 'systemctl start dnsmasq.service'
 	assert_file_missing "$state_root/manifest"
@@ -905,7 +1073,8 @@ mkdir -p "$fake_bin"
 : >"$captured_commands"
 : >"$fake_tty"
 chmod 0600 "$fake_tty"
-for command_name in chown; do
+real_curl=$(command -v curl)
+for command_name in chown journalctl; do
 	make_fake_command "$command_name"
 done
 make_fake_apt_get
@@ -914,9 +1083,11 @@ make_fake_dpkg_deb
 make_fake_ip
 make_fake_systemctl
 make_fake_ss
+make_fake_curl
 make_fake_readlink
 make_fake_cp
 make_fake_opensurge
+make_fake_opensurge_setup
 start_release_fixture
 
 # These cases catch a parser that begins host work before rejecting an invalid
@@ -946,6 +1117,8 @@ assert_contains "$captured_commands" 'dpkg-deb -f'
 assert_command_count 1
 assert_contains "$installer_log" 'verified release asset opensurge_1.2.3_amd64.deb for amd64'
 assert_generated_same_lan_config
+expect_fresh_administrator_setup_is_pipe_only_and_redacted
+expect_existing_administrator_skips_setup
 
 # A supplied tag must bypass discovery and be used verbatim in both asset URLs.
 : >"$fixture_server_log"
@@ -984,6 +1157,8 @@ expect_upgrade_skips_port_53_rejection
 expect_failure_rolls_back_owned_dns_state
 expect_failed_resolved_disable_restores_recorded_state
 expect_failed_dnsmasq_disable_restores_recorded_state
+expect_setup_failure_rolls_back_owned_state
+expect_control_health_failure_rolls_back_owned_state
 
 # Fresh configurations use the exact kernel default-route link name. They do
 # not assign a friendly alias or implicitly create a downstream network.

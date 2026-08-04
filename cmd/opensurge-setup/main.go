@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/controlapi"
@@ -19,18 +22,21 @@ import (
 )
 
 const (
-	defaultConfigPath = "/etc/opensurge/config.yaml"
-	defaultStoreDir   = "/var/lib/opensurge"
-	managedTLSDir     = "/etc/opensurge/tls"
+	defaultConfigPath         = "/etc/opensurge/config.yaml"
+	defaultStoreDir           = "/var/lib/opensurge"
+	managedTLSDir             = "/etc/opensurge/tls"
+	maxInstallerPasswordBytes = 256
 )
 
 type setupOptions struct {
-	command    string
-	configPath string
-	storeDir   string
-	username   string
-	certPath   string
-	keyPath    string
+	command       string
+	configPath    string
+	storeDir      string
+	username      string
+	certPath      string
+	keyPath       string
+	passwordFD    int
+	passwordFDSet bool
 }
 
 func main() {
@@ -44,7 +50,10 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 	if len(args) == 0 {
 		return setupOptions{}, errors.New("usage: opensurge-setup init|reset-password|replace-certificate")
 	}
-	options := setupOptions{command: args[0], configPath: defaultConfigPath, storeDir: defaultStoreDir}
+	options := setupOptions{command: args[0], configPath: defaultConfigPath, storeDir: defaultStoreDir, passwordFD: -1}
+	if args[0] != "init" && hasPasswordFDOption(args[1:]) {
+		return setupOptions{}, errors.New("--password-fd is only supported with init")
+	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	switch args[0] {
@@ -52,6 +61,7 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 		flags.StringVar(&options.configPath, "config", options.configPath, "gateway configuration path")
 		flags.StringVar(&options.storeDir, "store", options.storeDir, "control-plane state directory")
 		flags.StringVar(&options.username, "username", "", "administrator username")
+		flags.IntVar(&options.passwordFD, "password-fd", options.passwordFD, "inherited installer password pipe descriptor")
 	case "reset-password":
 		flags.StringVar(&options.storeDir, "store", options.storeDir, "control-plane state directory")
 		flags.StringVar(&options.username, "username", "", "administrator username")
@@ -68,6 +78,14 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 	if flags.NArg() != 0 {
 		return setupOptions{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == "password-fd" {
+			options.passwordFDSet = true
+		}
+	})
+	if options.passwordFDSet && options.passwordFD < 0 {
+		return setupOptions{}, errors.New("--password-fd must be a non-negative inherited pipe descriptor")
+	}
 	switch options.command {
 	case "init", "reset-password":
 		if strings.TrimSpace(options.username) == "" {
@@ -79,6 +97,15 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 		}
 	}
 	return options, nil
+}
+
+func hasPasswordFDOption(args []string) bool {
+	for _, arg := range args {
+		if arg == "--password-fd" || strings.HasPrefix(arg, "--password-fd=") {
+			return true
+		}
+	}
+	return false
 }
 
 func run(args []string, stdin *os.File, output io.Writer) error {
@@ -114,21 +141,29 @@ func runInit(options setupOptions, stdin *os.File, output io.Writer) error {
 	if initialized {
 		return errors.New("administrator setup has already been completed")
 	}
-	password, err := readTTYPassword(stdin, output, "Administrator password: ")
-	if err != nil {
-		return err
-	}
-	confirmation, err := readTTYPassword(stdin, output, "Repeat administrator password: ")
-	if err != nil {
-		return err
-	}
-	if password != confirmation {
-		return errors.New("administrator passwords do not match")
+	var password string
+	if options.passwordFDSet {
+		password, err = readPasswordFromInheritedPipe(options.passwordFD)
+		if err != nil {
+			return err
+		}
+	} else {
+		password, err = passwordFromTTY(stdin, output, "Administrator password: ")
+		if err != nil {
+			return err
+		}
+		confirmation, err := passwordFromTTY(stdin, output, "Repeat administrator password: ")
+		if err != nil {
+			return err
+		}
+		if password != confirmation {
+			return errors.New("administrator passwords do not match")
+		}
 	}
 	if err := controlapi.EnsureSelfSigned(certPath, keyPath, []net.IP{listenerIP}, timeNow()); err != nil {
 		return err
 	}
-	if err := setManagedTLSOwnership(certPath, keyPath); err != nil {
+	if err := setManagedTLSOwnershipFn(certPath, keyPath); err != nil {
 		return err
 	}
 	if err := store.Set(options.username, password); err != nil {
@@ -181,7 +216,7 @@ func runReplaceCertificate(options setupOptions, output io.Writer) error {
 	if err := controlapi.ReplaceCertificate(certPath, keyPath, certPEM, keyPEM); err != nil {
 		return err
 	}
-	if err := setManagedTLSOwnership(certPath, keyPath); err != nil {
+	if err := setManagedTLSOwnershipFn(certPath, keyPath); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintln(output, "OpenSurge HTTPS certificate replaced")
@@ -225,13 +260,13 @@ func managedTLSPath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, err := filepath.Abs(managedTLSDir)
+	root, err := filepath.Abs(managedTLSDirectory)
 	if err != nil {
 		return "", err
 	}
 	relative, err := filepath.Rel(root, absolute)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("TLS path %q must remain under %s", path, managedTLSDir)
+		return "", fmt.Errorf("TLS path %q must remain under %s", path, managedTLSDirectory)
 	}
 	return absolute, nil
 }
@@ -247,6 +282,45 @@ func readTTYPassword(stdin *os.File, output io.Writer, prompt string) (string, e
 		return "", fmt.Errorf("read password: %w", err)
 	}
 	return string(password), nil
+}
+
+// readPasswordFromInheritedPipe accepts the single anonymous pipe descriptor
+// passed by the release installer. It deliberately duplicates rather than
+// closes the caller-owned descriptor, so only the child process consumes it.
+func readPasswordFromInheritedPipe(fd int) (string, error) {
+	if fd < 0 {
+		return "", errors.New("password file descriptor must be non-negative")
+	}
+	duplicatedFD, err := syscall.Dup(fd)
+	if err != nil {
+		return "", fmt.Errorf("password file descriptor must be an open inherited pipe: %w", err)
+	}
+	input := os.NewFile(uintptr(duplicatedFD), "opensurge-installer-password")
+	defer input.Close()
+
+	info, err := input.Stat()
+	if err != nil {
+		return "", fmt.Errorf("inspect password pipe: %w", err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		return "", errors.New("password file descriptor must be an inherited pipe")
+	}
+
+	inputBytes, err := io.ReadAll(io.LimitReader(input, maxInstallerPasswordBytes+2))
+	if err != nil {
+		return "", fmt.Errorf("read password pipe: %w", err)
+	}
+	if len(inputBytes) == 0 || len(inputBytes) > maxInstallerPasswordBytes+1 {
+		return "", fmt.Errorf("installer password must be one line of at most %d bytes", maxInstallerPasswordBytes)
+	}
+	if inputBytes[len(inputBytes)-1] != '\n' || bytes.Count(inputBytes, []byte{'\n'}) != 1 || bytes.IndexByte(inputBytes, '\r') >= 0 || bytes.IndexByte(inputBytes, 0) >= 0 {
+		return "", errors.New("installer password must be exactly one newline-terminated line")
+	}
+	password := string(inputBytes[:len(inputBytes)-1])
+	if password == "" || !utf8.ValidString(password) {
+		return "", errors.New("installer password must be a non-empty UTF-8 line")
+	}
+	return password, nil
 }
 
 func setManagedTLSOwnership(paths ...string) error {
@@ -273,4 +347,9 @@ func setManagedTLSOwnership(paths ...string) error {
 	return nil
 }
 
-var timeNow = func() time.Time { return time.Now().UTC() }
+var (
+	managedTLSDirectory      = managedTLSDir
+	passwordFromTTY          = readTTYPassword
+	setManagedTLSOwnershipFn = setManagedTLSOwnership
+	timeNow                  = func() time.Time { return time.Now().UTC() }
+)
