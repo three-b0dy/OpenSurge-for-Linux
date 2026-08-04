@@ -90,6 +90,14 @@ assert_regular_resolv_conf() {
 	assert_contains "$resolver_path" "$expected"
 }
 
+assert_fake_service_state() {
+	local service=$1
+	local expected=$2
+	local state_file="$test_root/root/.systemctl-state/$service"
+
+	assert_file_equals "$state_file" "$expected"
+}
+
 assert_manifest() {
 	local expected=$1
 	local manifest="$test_root/root/var/lib/opensurge/install-state/manifest"
@@ -292,6 +300,9 @@ case "${1:-}" in
 	disable)
 		write_state "disabled-${state#*-}"
 		case " $* " in *' --now '*) write_state 'disabled-inactive' ;; esac
+		if test "${OPENSURGE_INSTALLER_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION:-}" = "$service"; then
+			exit 44
+		fi
 		;;
 	enable) write_state "enabled-${state#*-}" ;;
 	start) write_state "${state%-*}-active" ;;
@@ -424,6 +435,7 @@ run_installer() {
 		OPENSURGE_INSTALLER_TEST_DNSMASQ_STATE="${OPENSURGE_TEST_DNSMASQ_STATE:-}" \
 		OPENSURGE_INSTALLER_TEST_PORT53_TCP="${OPENSURGE_TEST_PORT53_TCP:-}" \
 		OPENSURGE_INSTALLER_TEST_PORT53_UDP="${OPENSURGE_TEST_PORT53_UDP:-}" \
+		OPENSURGE_INSTALLER_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION="${OPENSURGE_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION:-}" \
 		OPENSURGE_INSTALLER_TEST_IP_SCENARIO="${OPENSURGE_INSTALLER_TEST_IP_SCENARIO:-ens18}" \
 		OPENSURGE_INSTALLER_TEST_CONFIG_PATH="$config_path" \
 		OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH="$test_root/package-phase-complete" \
@@ -695,6 +707,39 @@ expect_failure_rolls_back_owned_dns_state() {
 	assert_file_missing "$state_root/resolv.conf.before"
 }
 
+expect_failed_resolved_disable_restores_recorded_state() {
+	local state_root="$test_root/root/var/lib/opensurge/install-state"
+
+	begin_host_state_case
+	prepare_symlinked_resolver 'nameserver 9.9.9.9'
+	if OPENSURGE_TEST_RESOLVED_STATE=enabled-active \
+		OPENSURGE_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION=systemd-resolved.service \
+		run_installer --version v1.2.3; then
+		fail 'installer accepted a failed systemd-resolved disable operation'
+	fi
+	assert_fake_service_state systemd-resolved.service $'enabled-active\n'
+	assert_contains "$captured_commands" 'systemctl enable systemd-resolved.service'
+	assert_contains "$captured_commands" 'systemctl start systemd-resolved.service'
+	assert_file_missing "$state_root/manifest"
+	assert_file_missing "$state_root/resolv.conf.before"
+}
+
+expect_failed_dnsmasq_disable_restores_recorded_state() {
+	local state_root="$test_root/root/var/lib/opensurge/install-state"
+
+	begin_host_state_case
+	if OPENSURGE_TEST_DNSMASQ_STATE=enabled-active \
+		OPENSURGE_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION=dnsmasq.service \
+		run_installer --version v1.2.3; then
+		fail 'installer accepted a failed generic dnsmasq disable operation'
+	fi
+	assert_fake_service_state dnsmasq.service $'enabled-active\n'
+	assert_contains "$captured_commands" 'systemctl enable dnsmasq.service'
+	assert_contains "$captured_commands" 'systemctl start dnsmasq.service'
+	assert_file_missing "$state_root/manifest"
+	assert_file_missing "$state_root/resolv.conf.before"
+}
+
 expect_fail_when_checksum_missing() {
 	rm -f "$fixture_checksums"
 	expect_fail
@@ -914,6 +959,8 @@ expect_existing_policy_survives_host_dependency_install
 expect_temporary_policy_is_removed_after_dependency_failure
 expect_upgrade_skips_port_53_rejection
 expect_failure_rolls_back_owned_dns_state
+expect_failed_resolved_disable_restores_recorded_state
+expect_failed_dnsmasq_disable_restores_recorded_state
 
 # Fresh configurations use the exact kernel default-route link name. They do
 # not assign a friendly alias or implicitly create a downstream network.

@@ -869,8 +869,9 @@ replace_resolv_conf() {
 
 suppress_generic_dnsmasq() {
 	if test "$dnsmasq_was_enabled" -eq 1 || test "$dnsmasq_was_active" -eq 1; then
-		systemctl disable --now dnsmasq.service || die 'cannot disable generic dnsmasq service'
 		dnsmasq_was_altered=1
+		write_install_manifest
+		systemctl disable --now dnsmasq.service || die 'cannot disable generic dnsmasq service'
 	fi
 	if service_is_enabled dnsmasq.service || service_is_active dnsmasq.service; then
 		die 'generic dnsmasq service remains enabled or active after dependency installation'
@@ -892,8 +893,9 @@ begin_host_state_transaction() {
 	host_state_transaction_started=1
 
 	if test "$resolved_was_active" -eq 1; then
-		systemctl disable --now systemd-resolved.service || die 'cannot disable systemd-resolved service'
 		resolved_was_altered=1
+		write_install_manifest
+		systemctl disable --now systemd-resolved.service || die 'cannot disable systemd-resolved service'
 		replace_resolv_conf
 		resolver_was_altered=1
 	fi
