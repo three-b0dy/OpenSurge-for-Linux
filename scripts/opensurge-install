@@ -589,6 +589,7 @@ initialize_administrator() {
 	if test -e /dev/fd/9; then
 		die 'cannot reserve installer password pipe descriptor'
 	fi
+	test -x "$setup_binary" || die 'installed OpenSurge setup binary is unavailable'
 
 	admin_password=$(generate_installer_password)
 	# The deterministic test-only source must not be inherited by setup either.
@@ -596,7 +597,6 @@ initialize_administrator() {
 	printf '%s\n' 'OpenSurge created the local admin account. Change this one-time password immediately in the Web UI:' >>"$tty_path"
 	printf '%s\n' "$admin_password" >>"$tty_path"
 	exec 9< <(printf '%s\n' "$admin_password")
-	test -x "$setup_binary" || die 'installed OpenSurge setup binary is unavailable'
 	if "$setup_binary" init --username admin --password-fd 9; then
 		setup_status=0
 	else

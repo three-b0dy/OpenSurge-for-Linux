@@ -199,8 +199,10 @@ if test "$#" -eq 2 && test "$1" = -i; then
 	if test "${OPENSURGE_INSTALLER_TEST_DPKG_FAIL:-}" = 1; then
 		exit 43
 	fi
-	mkdir -p "$OPENSURGE_INSTALLER_ROOT/usr/bin"
-	ln -sf "$OPENSURGE_INSTALLER_BIN_DIR/opensurge-setup" "$OPENSURGE_INSTALLER_ROOT/usr/bin/opensurge-setup"
+	if test "${OPENSURGE_INSTALLER_TEST_SETUP_BINARY_UNAVAILABLE:-}" != 1; then
+		mkdir -p "$OPENSURGE_INSTALLER_ROOT/usr/bin"
+		ln -sf "$OPENSURGE_INSTALLER_BIN_DIR/opensurge-setup" "$OPENSURGE_INSTALLER_ROOT/usr/bin/opensurge-setup"
+	fi
 	touch "$OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH"
 fi
 EOF
@@ -535,6 +537,7 @@ run_installer() {
 		OPENSURGE_INSTALLER_TEST_PORT53_UDP="${OPENSURGE_TEST_PORT53_UDP:-}" \
 		OPENSURGE_INSTALLER_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION="${OPENSURGE_TEST_SYSTEMCTL_FAIL_AFTER_MUTATION:-}" \
 		OPENSURGE_INSTALLER_TEST_SETUP_FAIL="${OPENSURGE_TEST_SETUP_FAIL:-}" \
+		OPENSURGE_INSTALLER_TEST_SETUP_BINARY_UNAVAILABLE="${OPENSURGE_TEST_SETUP_BINARY_UNAVAILABLE:-}" \
 		OPENSURGE_INSTALLER_TEST_CONTROL_HEALTH="${OPENSURGE_TEST_CONTROL_HEALTH:-available}" \
 		OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD="$test_secret" \
 		OPENSURGE_INSTALLER_TEST_REAL_CURL="$real_curl" \
@@ -666,6 +669,25 @@ expect_setup_failure_rolls_back_owned_state() {
 	assert_not_contains "$captured_commands" 'systemctl enable --now opensurge-gateway.socket opensurge-control.service'
 	assert_file_equals "$test_root/root/etc/resolv.conf" $'nameserver 192.0.2.53\n'
 	assert_file_missing "$test_root/root/var/lib/opensurge/install-state/manifest"
+	assert_not_contains "$captured_stdout" "$test_secret"
+	assert_not_contains "$captured_stderr" "$test_secret"
+	assert_not_contains "$captured_commands" "$test_secret"
+	assert_not_contains "$installer_log" "$test_secret"
+}
+
+expect_missing_setup_binary_fails_before_password_output() {
+	reset_install_root
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	: >"$fake_tty"
+	if OPENSURGE_TEST_SETUP_BINARY_UNAVAILABLE=1 run_installer --version v1.2.3; then
+		fail 'installer accepted a missing installed setup binary'
+	fi
+	assert_contains "$captured_stderr" 'installed OpenSurge setup binary is unavailable'
+	assert_command_not_invoked "$captured_commands" opensurge-setup
+	assert_file_missing "$test_root/root/var/lib/opensurge/admin.json"
+	test ! -s "$fake_tty" || fail 'installer displayed an unusable one-time password before detecting the missing setup binary'
 	assert_not_contains "$captured_stdout" "$test_secret"
 	assert_not_contains "$captured_stderr" "$test_secret"
 	assert_not_contains "$captured_commands" "$test_secret"
@@ -1157,6 +1179,7 @@ expect_upgrade_skips_port_53_rejection
 expect_failure_rolls_back_owned_dns_state
 expect_failed_resolved_disable_restores_recorded_state
 expect_failed_dnsmasq_disable_restores_recorded_state
+expect_missing_setup_binary_fails_before_password_output
 expect_setup_failure_rolls_back_owned_state
 expect_control_health_failure_rolls_back_owned_state
 
