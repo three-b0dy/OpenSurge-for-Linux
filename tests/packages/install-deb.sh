@@ -556,7 +556,11 @@ EOF
 }
 
 package=${1:-}
-[[ -n "$package" ]] || { printf 'usage: install-deb.sh /path/to/opensurge_<version>_<arch>.deb\n' >&2; exit 2; }
+installer_fixture=${2:-}
+[[ $# -eq 2 && -n "$package" && $installer_fixture == --installer-fixture ]] || {
+	printf 'usage: install-deb.sh /path/to/opensurge_<version>_<arch>.deb --installer-fixture\n' >&2
+	exit 2
+}
 [[ -f "$package" ]] || fail "package does not exist: $package"
 package=$(cd "$(dirname "$package")" && pwd)/$(basename "$package")
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

@@ -73,9 +73,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace ubuntu:24.04 \
             bash -euc '
               export DEBIAN_FRONTEND=noninteractive
-              apt-get update
-              apt-get install -y ca-certificates dnsmasq iproute2 nftables systemd
-              OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 tests/packages/install-deb.sh "$PACKAGE"
+              OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 tests/packages/install-deb.sh "$PACKAGE" --installer-fixture
             '
 
       - name: Upload package
@@ -92,6 +90,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Download packages
         uses: actions/download-artifact@v4
         with:
@@ -99,9 +100,14 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Stage release installer
+        run: |
+          cp scripts/opensurge-install release-assets/opensurge-install
+          chmod 0755 release-assets/opensurge-install
+
       - name: Create checksums
         working-directory: release-assets
-        run: sha256sum opensurge_*.deb > SHA256SUMS
+        run: sha256sum opensurge-install opensurge_*.deb | LC_ALL=C sort -k2,2 > SHA256SUMS
 
       - name: Publish release assets
         env:
@@ -110,4 +116,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "OpenSurge $GITHUB_REF_NAME" \
             --generate-notes \
-            release-assets/opensurge_*.deb release-assets/SHA256SUMS
+            release-assets/opensurge-install release-assets/opensurge_*.deb release-assets/SHA256SUMS

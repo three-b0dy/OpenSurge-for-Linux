@@ -13,6 +13,7 @@ fake_tty="$test_root/tty"
 test_secret='installer-test-secret-must-not-leak'
 fixture_root="$test_root/release-fixture"
 fixture_deb="$fixture_root/opensurge_1.2.3_amd64.deb"
+fixture_installer="$fixture_root/opensurge-install"
 fixture_checksums="$fixture_root/SHA256SUMS"
 fixture_checksums_content=''
 fixture_server_port="$test_root/release-server.port"
@@ -464,8 +465,12 @@ EOF
 
 start_release_fixture() {
 	mkdir -p "$fixture_root"
+	printf 'approved release installer\n' >"$fixture_installer"
 	printf 'approved test package\n' >"$fixture_deb"
-	fixture_checksums_content="$(sha256sum "$fixture_deb" | awk '{print $1 "  opensurge_1.2.3_amd64.deb"}')"
+	fixture_checksums_content="$(
+		cd "$fixture_root"
+		sha256sum opensurge-install opensurge_1.2.3_amd64.deb | LC_ALL=C sort -k2,2
+	)"
 	printf '%s\n' "$fixture_checksums_content" >"$fixture_checksums"
 
 	python3 - "$fixture_root" >"$fixture_server_port" 2>"$fixture_server_log" <<'PY' &
