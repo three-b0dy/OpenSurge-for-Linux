@@ -311,6 +311,26 @@ func TestRenderTUNEnablesLinuxAutoRedirect(t *testing.T) {
 	}
 }
 
+func TestRenderTUNForcesLinuxAutoRouteAndAutoRedirect(t *testing.T) {
+	cfg := config.Default()
+	cfg.Transparent.Mode = config.TransparentModeTUN
+	cfg.Transparent.TUNAutoRoute = false
+	cfg.Transparent.TUNAutoRedirect = false
+
+	rendered, err := RenderConfig(cfg)
+	if err != nil {
+		t.Fatalf("RenderConfig() error = %v", err)
+	}
+	for _, want := range []string{
+		"  auto-route: true",
+		"  auto-redirect: true",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered config missing Linux-owned value %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestImportedProfileCannotOverrideAutoRedirect(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.yaml")
