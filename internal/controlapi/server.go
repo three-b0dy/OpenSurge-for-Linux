@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +37,8 @@ type Options struct {
 	NetworkRunner     NetworkRunner
 	ConfigRunner      ConfigurationRunner
 	AdminStore        AdminStore
+	TLSCertFile       string
+	TLSKeyFile        string
 	DiscoverNetwork   func(context.Context, string, string) (linuxnetwork.Snapshot, error)
 	ListInterfaces    func(context.Context) ([]linuxnetwork.InterfaceOption, error)
 	DiscoverNeighbors func(context.Context, string) ([]linuxnetwork.Neighbor, error)
@@ -57,6 +61,10 @@ type Server struct {
 	static            http.Handler
 	credentials       SourceCredentialStore
 	adminStore        AdminStore
+	tlsCertFile       string
+	tlsKeyFile        string
+	managementHost    string
+	managementPort    string
 	fetchConnections  func(context.Context, config.Config) (mihomo.ConnectionsSnapshot, error)
 	fetchProxyHealth  func(context.Context, config.Config) (mihomo.ProxyHealthSnapshot, error)
 	measureProxyDelay func(context.Context, config.Config, string, string, time.Duration) mihomo.ProxyDelayResult
@@ -85,11 +93,37 @@ func New(options Options) (*Server, error) {
 		return nil, err
 	}
 	if options.Addr == "" {
-		options.Addr = "127.0.0.1:61767"
+		managedConfig, loadErr := config.LoadRuntime(configPath)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load management configuration: %w", loadErr)
+		}
+		options.Addr = managedConfig.Management.Listen
+		if options.TLSCertFile == "" {
+			options.TLSCertFile = managedConfig.Management.TLSCertFile
+		}
+		if options.TLSKeyFile == "" {
+			options.TLSKeyFile = managedConfig.Management.TLSKeyFile
+		}
 	}
-	host, _, err := net.SplitHostPort(options.Addr)
-	if err != nil || (host != "127.0.0.1" && host != "localhost") {
-		return nil, fmt.Errorf("control API must listen on loopback IPv4")
+	if options.TLSCertFile == "" || options.TLSKeyFile == "" {
+		if managedConfig, loadErr := config.LoadRuntime(configPath); loadErr == nil {
+			if options.TLSCertFile == "" {
+				options.TLSCertFile = managedConfig.Management.TLSCertFile
+			}
+			if options.TLSKeyFile == "" {
+				options.TLSKeyFile = managedConfig.Management.TLSKeyFile
+			}
+		}
+	}
+	host, port, err := parseManagementListener(options.Addr)
+	if err != nil {
+		return nil, err
+	}
+	if options.TLSCertFile == "" {
+		options.TLSCertFile = DefaultTLSCertFile
+	}
+	if options.TLSKeyFile == "" {
+		options.TLSKeyFile = DefaultTLSKeyFile
 	}
 	if options.StoreDir == "" {
 		options.StoreDir = "/var/lib/opensurge"
@@ -156,12 +190,16 @@ func New(options Options) (*Server, error) {
 		static:            options.Static,
 		credentials:       options.Credentials,
 		adminStore:        options.AdminStore,
+		tlsCertFile:       options.TLSCertFile,
+		tlsKeyFile:        options.TLSKeyFile,
+		managementHost:    host,
+		managementPort:    port,
 		fetchConnections:  mihomo.FetchConnections,
 		fetchProxyHealth:  mihomo.FetchProxyHealth,
 		measureProxyDelay: mihomo.MeasureProxyDelay,
 		probeConnectivity: probeConnectivityTarget,
 		trafficSampler:    newTrafficRateSampler(),
-		baseURL:           "http://" + options.Addr,
+		baseURL:           "https://" + options.Addr,
 		sessions:          map[string]time.Time{},
 		loginFailures:     map[string][]time.Time{},
 	}, nil
@@ -304,11 +342,19 @@ func controlConfigFrom(cfg config.Config, revision string) ControlConfig {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	listener, err := net.Listen("tcp4", s.addr)
+	tlsConfig, err := s.tlsConfigForServe()
+	if err != nil {
+		return err
+	}
+	listener, err := tls.Listen("tcp4", s.addr, tlsConfig)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
+	return s.serveWithListener(ctx, listener)
+}
+
+func (s *Server) serveWithListener(ctx context.Context, listener net.Listener) error {
 	descriptor := map[string]any{"schema_version": SchemaVersion, "url": s.baseURL, "pid": os.Getpid()}
 	data, _ := json.MarshalIndent(descriptor, "", "  ")
 	if err := writeAtomic(filepath.Join(s.store.Dir(), "control-endpoint.json"), append(data, '\n'), 0o600); err != nil {
@@ -321,7 +367,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
-	err = httpServer.Serve(listener)
+	err := httpServer.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -330,20 +376,37 @@ func (s *Server) Serve(ctx context.Context) error {
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if parsed, _, err := net.SplitHostPort(r.Host); err == nil {
-			host = parsed
-		}
-		if host != "127.0.0.1" && host != "localhost" {
+		if !s.allowedManagementHost(r.Host) {
 			writeError(w, http.StatusForbidden, "invalid_host", "request host is not allowed")
 			return
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) allowedManagementHost(value string) bool {
+	return value == s.managementHost || value == net.JoinHostPort(s.managementHost, s.managementPort)
+}
+
+func parseManagementListener(address string) (string, string, error) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return "", "", fmt.Errorf("management listener must be an IPv4 host:port: %w", err)
+	}
+	ip := net.ParseIP(host).To4()
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
+		return "", "", fmt.Errorf("management listener must be a non-loopback IPv4 address")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return "", "", fmt.Errorf("management listener port must be between 1 and 65535")
+	}
+	return ip.String(), strconv.Itoa(port), nil
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {

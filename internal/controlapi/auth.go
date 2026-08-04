@@ -76,24 +76,7 @@ func (s *FileAdminStore) Initialized() (bool, error) {
 }
 
 func (s *FileAdminStore) Set(username, password string) error {
-	username = strings.TrimSpace(username)
-	if username == "" {
-		return fmt.Errorf("username is required")
-	}
-	if utf8.RuneCountInString(password) < 12 {
-		return fmt.Errorf("password must contain at least 12 UTF-8 characters")
-	}
-
-	salt := make([]byte, adminSaltLength)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("generate password salt: %w", err)
-	}
-	record := adminRecord{
-		Username: username,
-		Salt:     base64.RawStdEncoding.EncodeToString(salt),
-		Hash:     base64.RawStdEncoding.EncodeToString(derivePassword(password, salt)),
-	}
-	data, err := json.Marshal(record)
+	_, data, err := newAdminRecord(username, password)
 	if err != nil {
 		return err
 	}
@@ -107,6 +90,30 @@ func (s *FileAdminStore) Set(username, password string) error {
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
+	}
+	return writeAtomic(s.path, append(data, '\n'), 0o600)
+}
+
+func (s *FileAdminStore) Reset(username, password string) error {
+	username, data, err := newAdminRecord(username, password)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrAdminNotInitialized
+	}
+	if err != nil {
+		return err
+	}
+	var record adminRecord
+	if err := json.Unmarshal(current, &record); err != nil {
+		return fmt.Errorf("decode administrator record: %w", err)
+	}
+	if strings.TrimSpace(username) != record.Username {
+		return ErrInvalidCredentials
 	}
 	return writeAtomic(s.path, append(data, '\n'), 0o600)
 }
@@ -142,4 +149,28 @@ func (s *FileAdminStore) Authenticate(username, password string) error {
 
 func derivePassword(password string, salt []byte) []byte {
 	return argon2.IDKey([]byte(password), salt, adminArgonTime, adminArgonMemory, adminArgonThreads, adminKeyLength)
+}
+
+func newAdminRecord(username, password string) (string, []byte, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", nil, fmt.Errorf("username is required")
+	}
+	if utf8.RuneCountInString(password) < 12 {
+		return "", nil, fmt.Errorf("password must contain at least 12 UTF-8 characters")
+	}
+	salt := make([]byte, adminSaltLength)
+	if _, err := rand.Read(salt); err != nil {
+		return "", nil, fmt.Errorf("generate password salt: %w", err)
+	}
+	record := adminRecord{
+		Username: username,
+		Salt:     base64.RawStdEncoding.EncodeToString(salt),
+		Hash:     base64.RawStdEncoding.EncodeToString(derivePassword(password, salt)),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return "", nil, err
+	}
+	return username, data, nil
 }

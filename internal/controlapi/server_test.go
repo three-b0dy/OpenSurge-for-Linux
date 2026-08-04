@@ -24,6 +24,11 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
+const (
+	testManagementAddr = "192.168.50.1:61767"
+	testManagementURL  = "https://" + testManagementAddr
+)
+
 func TestDoctorChecksForControlHidesRootPrivileges(t *testing.T) {
 	checks := []doctor.Check{
 		{Name: "root privileges", OK: false, Message: "start/stop require sudo"},
@@ -156,7 +161,8 @@ func TestAuthenticatedWebSessionSlidesIdleExpiry(t *testing.T) {
 	server.sessions[session] = time.Now().Add(time.Minute)
 	started := time.Now()
 
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767/api/test", nil)
+	request := httptest.NewRequest(http.MethodGet, testManagementURL+"/api/test", nil)
+	request.Host = testManagementAddr
 	request.AddCookie(&http.Cookie{Name: "opensurge_session", Value: session})
 	response := httptest.NewRecorder()
 	server.auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -184,7 +190,8 @@ func TestAuthenticatedWebSessionSlidesIdleExpiry(t *testing.T) {
 func TestExpiredWebSessionIsRejectedWithoutRenewal(t *testing.T) {
 	server := newTestServer(t)
 	called := false
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767/api/test", nil)
+	request := httptest.NewRequest(http.MethodGet, testManagementURL+"/api/test", nil)
+	request.Host = testManagementAddr
 	request.AddCookie(&http.Cookie{Name: "opensurge_session", Value: "expired"})
 	response := httptest.NewRecorder()
 	server.auth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -603,8 +610,8 @@ func TestControlConfigCanCorrectPreparedRecoveryBeforeNetworkChanges(t *testing.
 	}
 	current.Gateway.LANIP, current.DNS.Listen = "192.168.1.21", "192.168.1.21"
 	payload, _ := json.Marshal(current)
-	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:61767/api/v1/config", bytes.NewReader(payload))
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPut, testManagementURL+"/api/v1/config", bytes.NewReader(payload))
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+current.Revision+`"`)
 	response := httptest.NewRecorder()
@@ -845,8 +852,8 @@ func TestSourceApplyDelegatesAuthoritativeEngineValidationToRunner(t *testing.T)
 		t.Fatal(err)
 	}
 	revision := fileDigest(server.configPath)
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/sources/"+source.ID+"/apply", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/sources/"+source.ID+"/apply", nil)
+	request.Host = testManagementAddr
 	request.SetPathValue("id", source.ID)
 	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+revision+`"`)
@@ -878,8 +885,8 @@ func TestDevicePolicyUsesOptimisticRevisionAndConfigurationRunner(t *testing.T) 
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
-	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:61767/api/v1/device-policy", strings.NewReader(`{"devices":[],"profiles":[],"templates":[],"rule_sets":[]}`))
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPut, testManagementURL+"/api/v1/device-policy", strings.NewReader(`{"devices":[],"profiles":[],"templates":[],"rule_sets":[]}`))
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+document.Revision+`"`)
 	response := httptest.NewRecorder()
@@ -934,8 +941,8 @@ func TestControlConfigUsesRevisionAndAppliesTopology(t *testing.T) {
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
-	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:61767/api/v1/config", bytes.NewReader(requestBody))
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPut, testManagementURL+"/api/v1/config", bytes.NewReader(requestBody))
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+current.Revision+`"`)
 	response := httptest.NewRecorder()
@@ -970,8 +977,8 @@ func TestGatewayReloadPreservesActiveTakeoverStage(t *testing.T) {
 	}
 	runner := &recordingActionRunner{}
 	server.runner = runner
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "reload-success")
 	response := httptest.NewRecorder()
@@ -1017,8 +1024,8 @@ func TestGatewayRestartMihomoPreservesActiveTakeoverStage(t *testing.T) {
 	}
 	runner := &recordingActionRunner{}
 	server.runner = runner
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/restart-mihomo", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/restart-mihomo", nil)
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "restart-mihomo-success")
 	response := httptest.NewRecorder()
@@ -1049,8 +1056,8 @@ func TestGatewayStopAcceptsSkippedClientValidation(t *testing.T) {
 	if err := server.store.SaveRecovery(RecoveryState{Stage: RecoveryClientValidationSkipped, ClientValidationSkipped: true, Required: true}); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/stop", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/stop", nil)
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "stop-after-client-skip")
 	response := httptest.NewRecorder()
@@ -1085,8 +1092,8 @@ func TestGatewayReloadStopFailurePreservesActiveTakeoverStage(t *testing.T) {
 		_ = runtime.RemoveState(paths.StateFile)
 		return errors.New("reload stop failed: nftables unload failed")
 	})
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "reload-stop-failed")
 	response := httptest.NewRecorder()
@@ -1126,8 +1133,8 @@ func TestGatewayReloadFailureAfterStopReturnsToRestartableTakeoverStage(t *testi
 		}
 		return errors.New("restart failed")
 	})
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "reload-failed")
 	response := httptest.NewRecorder()
@@ -1144,8 +1151,8 @@ func TestGatewayReloadFailureAfterStopReturnsToRestartableTakeoverStage(t *testi
 
 func TestGatewayReloadRejectsStoppedGateway(t *testing.T) {
 	server := newTestServer(t)
-	unauthorized := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
-	unauthorized.Host = "127.0.0.1:61767"
+	unauthorized := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/gateway/reload", nil)
+	unauthorized.Host = testManagementAddr
 	unauthorizedResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(unauthorizedResponse, unauthorized)
 	if unauthorizedResponse.Code != http.StatusUnauthorized {
@@ -1485,7 +1492,7 @@ runtime:
 		}
 		return linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: mode, IPv4: "192.168.1.20", SubnetMask: "255.255.255.0", Router: "192.168.1.1", DNS: []string{"192.168.1.1"}}, nil
 	}
-	server, err := New(Options{ConfigPath: configPath, Addr: "127.0.0.1:61767", StoreDir: filepath.Join(dir, "store"), Runner: fakeRunner{}, NetworkRunner: network, ConfigRunner: fakeConfigurationRunner{}, DiscoverNetwork: discover, ListInterfaces: func(context.Context) ([]linuxnetwork.InterfaceOption, error) {
+	server, err := New(Options{ConfigPath: configPath, Addr: testManagementAddr, StoreDir: filepath.Join(dir, "store"), Runner: fakeRunner{}, NetworkRunner: network, ConfigRunner: fakeConfigurationRunner{}, DiscoverNetwork: discover, ListInterfaces: func(context.Context) ([]linuxnetwork.InterfaceOption, error) {
 		return []linuxnetwork.InterfaceOption{{Interface: "en0", NetworkService: "Wi-Fi"}, {Interface: "en7", NetworkService: "USB LAN"}}, nil
 	}, DiscoverNeighbors: func(context.Context, string) ([]linuxnetwork.Neighbor, error) { return []linuxnetwork.Neighbor{}, nil }, PingRouter: func(context.Context, string) error { return nil }, Static: http.NotFoundHandler(), Credentials: &memoryCredentialStore{}})
 	if err != nil {
@@ -1596,8 +1603,8 @@ func (f *fakeNetworkRunner) ProbeDHCP(_ context.Context, _, _ string, _ time.Dur
 }
 
 func performAuthorized(server *Server, method, path string, body []byte) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(method, "http://127.0.0.1:61767"+path, bytes.NewReader(body))
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(method, testManagementURL+path, bytes.NewReader(body))
+	request.Host = testManagementAddr
 	authorizeTestRequest(server, request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1611,6 +1618,6 @@ func authorizeTestRequest(server *Server, request *http.Request) {
 	server.mu.Unlock()
 	request.AddCookie(&http.Cookie{Name: "opensurge_session", Value: session, Path: "/"})
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
-		request.Header.Set("Origin", "http://127.0.0.1:61767")
+		request.Header.Set("Origin", testManagementURL)
 	}
 }

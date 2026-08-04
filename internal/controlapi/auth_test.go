@@ -101,8 +101,8 @@ func TestAuthenticatedMutationsRequireSameOrigin(t *testing.T) {
 	server := newAuthTestServer(t)
 	login := postAuthJSON(t, server, "/api/v1/auth/login", `{"username":"admin","password":"`+testAdminPassword+`"}`, "192.168.50.9", nil)
 	cookie := login.Result().Cookies()[0]
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/recovery", strings.NewReader(`{"stage":"idle"}`))
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+"/api/v1/recovery", strings.NewReader(`{"stage":"idle"}`))
+	request.Host = testManagementAddr
 	request.RemoteAddr = "192.168.50.9:1234"
 	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
@@ -118,16 +118,16 @@ func TestAuthRoutesReplaceBootstrapAndProtectAPI(t *testing.T) {
 	if unauthorized.Code != http.StatusOK {
 		t.Fatalf("auth status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
 	}
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767/api/v1/overview", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodGet, testManagementURL+"/api/v1/overview", nil)
+	request.Host = testManagementAddr
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized API status=%d body=%s", response.Code, response.Body.String())
 	}
 	for _, path := range []string{"/bootstrap", "/api/v1/session/bootstrap"} {
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767"+path, nil)
-		request.Host = "127.0.0.1:61767"
+		request := httptest.NewRequest(http.MethodGet, testManagementURL+path, nil)
+		request.Host = testManagementAddr
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, request)
 		if response.Code != http.StatusNotFound {
@@ -138,8 +138,8 @@ func TestAuthRoutesReplaceBootstrapAndProtectAPI(t *testing.T) {
 
 func TestBearerAuthenticationIsRetired(t *testing.T) {
 	server := newAuthTestServer(t)
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767/api/v1/overview", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodGet, testManagementURL+"/api/v1/overview", nil)
+	request.Host = testManagementAddr
 	request.Header.Set("Authorization", "Bearer legacy-token")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -159,11 +159,11 @@ func newAuthTestServer(t *testing.T) *Server {
 
 func postAuthJSON(t *testing.T, server *Server, path, body, remoteIP string, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767"+path, strings.NewReader(body))
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodPost, testManagementURL+path, strings.NewReader(body))
+	request.Host = testManagementAddr
 	request.RemoteAddr = remoteIP + ":1234"
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", "http://127.0.0.1:61767")
+	request.Header.Set("Origin", testManagementURL)
 	if cookie != nil {
 		request.AddCookie(cookie)
 	}
@@ -174,8 +174,8 @@ func postAuthJSON(t *testing.T, server *Server, path, body, remoteIP string, coo
 
 func getAuthStatus(t *testing.T, server *Server, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:61767/api/v1/auth/status", nil)
-	request.Host = "127.0.0.1:61767"
+	request := httptest.NewRequest(http.MethodGet, testManagementURL+"/api/v1/auth/status", nil)
+	request.Host = testManagementAddr
 	request.RemoteAddr = "192.168.50.9:1234"
 	if cookie != nil {
 		request.AddCookie(cookie)
