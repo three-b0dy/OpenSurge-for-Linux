@@ -68,6 +68,17 @@ ipv6_group_count() {
 	printf '%s' "$count"
 }
 
+is_unspecified_or_loopback_hex() {
+	normalized=$1
+	while test "${normalized#0}" != "$normalized"; do
+		normalized=${normalized#0}
+	done
+	case "$normalized" in
+		''|1) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 is_nonlocal_ipv6() {
 	address=$1
 	case "$address" in
@@ -81,11 +92,18 @@ is_nonlocal_ipv6() {
 			right=${address#*::}
 			left_count=$(ipv6_group_count "$left") || return 1
 			right_count=$(ipv6_group_count "$right") || return 1
-			test $((left_count + right_count)) -lt 8
+			test $((left_count + right_count)) -lt 8 || return 1
+			if test -z "$left" && is_unspecified_or_loopback_hex "$right"; then
+				return 1
+			fi
 			;;
 		*)
 			test "${address#:}" = "$address" && test "${address%:}" = "$address" || return 1
-			test "$(ipv6_group_count "$address")" -eq 8
+			test "$(ipv6_group_count "$address")" -eq 8 || return 1
+			flattened=$(printf '%s' "$address" | tr -d ':') || return 1
+			if is_unspecified_or_loopback_hex "$flattened"; then
+				return 1
+			fi
 			;;
 	esac
 }

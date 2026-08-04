@@ -457,6 +457,52 @@ EOF
 	rm -rf /var/lib/opensurge
 }
 
+test_expanded_local_ipv6_manifest_is_retained() {
+	local selected_resolver
+	local current_resolver=$'nameserver 192.0.2.53\n'
+	local backup_resolver=$'nameserver 203.0.113.53\n'
+
+	for selected_resolver in 0:0:0:0:0:0:0:0 0:0:0:0:0:0:0:1; do
+		prepare_resolver_regular "$current_resolver"
+		rm -rf /var/lib/opensurge/install-state
+		mkdir -p /var/lib/opensurge/install-state
+		chmod 0700 /var/lib/opensurge/install-state
+		printf '%s' "$backup_resolver" >/var/lib/opensurge/install-state/resolv.conf.before
+		cat >/var/lib/opensurge/install-state/manifest <<EOF
+state_version=1
+installer_version=1
+transaction_id=expanded-ipv6-test
+install_phase=complete
+resolver_was_altered=1
+resolved_was_altered=1
+resolved_was_enabled=1
+resolved_was_active=1
+dnsmasq_was_altered=1
+dnsmasq_was_enabled=1
+dnsmasq_was_active=1
+resolv_conf_backup_exists=1
+resolv_conf_kind=regular
+selected_resolver=$selected_resolver
+resolver_selection=nameserver
+EOF
+		chmod 0600 /var/lib/opensurge/install-state/manifest
+		set_service_state systemd-resolved.service disabled-inactive
+		set_service_state dnsmasq.service disabled-inactive
+		: >"$command_log"
+		if PATH="$fixture_bin:$PATH" "$extracted_postrm" remove; then
+			fail "postrm trusted local expanded IPv6 resolver: $selected_resolver"
+		fi
+		[[ -f /var/lib/opensurge/install-state/manifest ]] || fail 'postrm removed invalid expanded-IPv6 manifest'
+		[[ -f /var/lib/opensurge/install-state/resolv.conf.before ]] || fail 'postrm removed invalid expanded-IPv6 backup'
+		assert_file_equals /etc/resolv.conf "$current_resolver"
+		assert_service_state systemd-resolved.service disabled-inactive
+		assert_service_state dnsmasq.service disabled-inactive
+		assert_not_contains "$command_log" 'systemctl enable systemd-resolved.service'
+		assert_not_contains "$command_log" 'systemctl start dnsmasq.service'
+	done
+	rm -rf /var/lib/opensurge
+}
+
 package=${1:-}
 [[ -n "$package" ]] || { printf 'usage: install-deb.sh /path/to/opensurge_<version>_<arch>.deb\n' >&2; exit 2; }
 [[ -f "$package" ]] || fail "package does not exist: $package"
@@ -528,6 +574,7 @@ test_preinst_rejects_invalid_markers
 expect_direct_dpkg_install_failure
 test_remove_restores_only_owned_state
 test_purge_restores_only_owned_state_and_credentials
+test_expanded_local_ipv6_manifest_is_retained
 test_invalid_manifest_is_retained
 
 printf 'package lifecycle assertions passed for %s\n' "$architecture"
