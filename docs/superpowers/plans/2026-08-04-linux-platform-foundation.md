@@ -313,6 +313,9 @@ git commit -m "feat: add isolated nftables manager"
 **Files:**
 - Delete: `apps/menubar/`
 - Delete: `packaging/launchd/`
+- Delete: `cmd/opensurge-network/`
+- Delete: `internal/macosnetwork/`
+- Delete: legacy `runtime.SystemProxySnapshot` and `runtime.SystemProxySetting` definitions after the macOS package is removed.
 - Delete: `scripts/build-menubar-app.sh`, `scripts/check-menubar.sh`, `scripts/prepare-gui-release-deps.sh`, `scripts/build-gui-installer.sh`, `scripts/notarize-gui-installer.sh`, `scripts/verify-unsigned-gui-installer.sh`, `scripts/uninstall-gui.sh`
 - Modify: `Makefile`
 - Modify: `README.md`, `README.en.md`, `docs/agent-wiki/wiki/index.md`
@@ -335,17 +338,17 @@ Expected: FAIL because the repository still documents the macOS product.
 
 - [ ] **Step 3: Delete macOS-only surface and replace user documentation**
 
-Replace the README opening, installation section, topology descriptions, validation names, and agent wiki index with Linux-only statements from the approved design. `docs/linux-migration.md` must show the candidate-only migration command, the required manual interface mappings, and the warning that it does not change a router's DHCP state.
+Delete the menu-bar, launchd, macOS network/system-proxy, and `opensurge-network` CLI surfaces. Replace the README opening, installation section, topology descriptions, validation names, and agent wiki index with Linux-only statements from the approved design. `docs/linux-migration.md` must show the candidate-only migration command, the required manual interface mappings, and the warning that it does not change a router's DHCP state.
 
 - [ ] **Step 4: Run documentation, Go, and web checks**
 
-Run: `sh -c '! rg -n "OpenSurge for Mac|menubar-build|launchd|pfctl|networksetup" README.md README.en.md docs/agent-wiki/wiki' && go test ./... && make web-test`
+Run: `sh -c '! rg -n "OpenSurge for Mac|menubar-build|launchd|pfctl|networksetup" README.md README.en.md docs/agent-wiki/wiki' && test ! -e cmd/opensurge-network && test ! -e internal/macosnetwork && go test ./... && make web-test`
 
 Expected: PASS; macOS command names are absent from current user/agent entrypoints.
 
 - [ ] **Step 5: Commit the Linux-only baseline**
 
 ```bash
-git add README.md README.en.md Makefile docs apps packaging scripts
+git add README.md README.en.md Makefile docs apps packaging scripts cmd internal
 git commit -m "docs: convert project baseline to OpenSurge for Linux"
 ```
