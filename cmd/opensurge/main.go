@@ -1042,7 +1042,7 @@ func stringMetadata(metadata map[string]any, key string) string {
 }
 
 func printUsage(out *os.File) {
-	fmt.Fprintf(out, `OpenSurge for Mac
+	fmt.Fprintf(out, `OpenSurge for Linux
 
 Usage:
   opensurge <command> --config <path>

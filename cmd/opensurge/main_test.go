@@ -21,9 +21,15 @@ import (
 )
 
 func TestRunNoArgumentsPrintsOpenSurgeUsage(t *testing.T) {
-	code := run(nil)
+	var code int
+	usage := captureStderr(t, func() {
+		code = run(nil)
+	})
 	if code != 2 {
 		t.Fatalf("run(nil) = %d, want 2", code)
+	}
+	if !strings.Contains(usage, "OpenSurge for Linux") {
+		t.Fatalf("usage = %q, want Linux product title", usage)
 	}
 }
 
