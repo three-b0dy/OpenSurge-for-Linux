@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
@@ -195,7 +195,7 @@ func enrichTUNRouteError(detail string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	route, err := macosnetwork.LookupRoute(ctx, ip.String())
+	route, err := linuxnetwork.LookupRoute(ctx, ip.String())
 	if err != nil || route.Interface == "" {
 		return detail
 	}

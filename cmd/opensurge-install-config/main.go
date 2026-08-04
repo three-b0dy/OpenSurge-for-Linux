@@ -11,8 +11,8 @@ import (
 
 func main() {
 	source := flag.String("source", "", "source gateway configuration")
-	root := flag.String("root", "/Library/Application Support/OpenSurge", "installed root-owned data directory")
-	output := flag.String("output", "", "destination config; defaults to <root>/config.yaml")
+	root := flag.String("root", "/var/lib/opensurge", "installed root-owned data directory")
+	output := flag.String("output", "/etc/opensurge/config.yaml", "destination config")
 	validatePackageSource := flag.Bool("validate-package-source", false, "validate that a config is self-contained for packaging")
 	flag.Parse()
 	if *source == "" {

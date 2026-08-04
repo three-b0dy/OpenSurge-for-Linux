@@ -57,7 +57,7 @@ func TestSaveStateReplacesExistingState(t *testing.T) {
 	}
 }
 
-func TestStateDropsLegacySystemProxyDuringRoundTrip(t *testing.T) {
+func TestStateIgnoresRemovedSystemProxyFieldDuringRoundTrip(t *testing.T) {
 	var state State
 	if err := json.Unmarshal([]byte(`{"nftables_loaded":true,"firewall_enabled_before":false,"local_system_proxy":{"network_service":"Wi-Fi"}}`), &state); err != nil {
 		t.Fatal(err)

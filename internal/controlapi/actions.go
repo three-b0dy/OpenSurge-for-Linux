@@ -16,7 +16,7 @@ import (
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 )
 
 type ActionRunner interface {
@@ -24,7 +24,7 @@ type ActionRunner interface {
 }
 
 type NetworkRunner interface {
-	SetManual(context.Context, string, macosnetwork.ManualConfig) error
+	SetManual(context.Context, string, linuxnetwork.ManualConfig) error
 	SetDHCP(context.Context, string, string) error
 	ProbeDHCP(context.Context, string, string, time.Duration) ([]string, error)
 }
@@ -73,25 +73,25 @@ func (DirectRunner) Run(ctx context.Context, action, configPath string) error {
 	}
 }
 
-func (DirectRunner) SetManual(ctx context.Context, _ string, cfg macosnetwork.ManualConfig) error {
+func (DirectRunner) SetManual(ctx context.Context, _ string, cfg linuxnetwork.ManualConfig) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("privileged helper is required")
 	}
-	return macosnetwork.SetManual(ctx, cfg)
+	return linuxnetwork.SetManual(ctx, cfg)
 }
 
 func (DirectRunner) SetDHCP(ctx context.Context, _ string, service string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("privileged helper is required")
 	}
-	return macosnetwork.SetDHCP(ctx, service)
+	return linuxnetwork.SetDHCP(ctx, service)
 }
 
 func (DirectRunner) ProbeDHCP(ctx context.Context, _ string, interfaceName string, timeout time.Duration) ([]string, error) {
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("privileged helper is required")
 	}
-	return macosnetwork.ProbeDHCPServers(ctx, interfaceName, timeout)
+	return linuxnetwork.ProbeDHCPServers(ctx, interfaceName, timeout)
 }
 
 type HelperClient struct {
@@ -101,7 +101,7 @@ type HelperClient struct {
 type HelperRequest struct {
 	Action         string                     `json:"action"`
 	ConfigPath     string                     `json:"config_path"`
-	Manual         *macosnetwork.ManualConfig `json:"manual,omitempty"`
+	Manual         *linuxnetwork.ManualConfig `json:"manual,omitempty"`
 	NetworkService string                     `json:"network_service,omitempty"`
 	Interface      string                     `json:"interface,omitempty"`
 	TimeoutMillis  int                        `json:"timeout_millis,omitempty"`
@@ -122,7 +122,7 @@ func (c HelperClient) Run(ctx context.Context, action, configPath string) error 
 	return err
 }
 
-func (c HelperClient) SetManual(ctx context.Context, configPath string, cfg macosnetwork.ManualConfig) error {
+func (c HelperClient) SetManual(ctx context.Context, configPath string, cfg linuxnetwork.ManualConfig) error {
 	_, err := c.call(ctx, HelperRequest{Action: "network-set-manual", ConfigPath: configPath, Manual: &cfg})
 	return err
 }
@@ -326,7 +326,7 @@ func validateHelperNetworkTarget(ctx context.Context, cfg config.Config, service
 	if interfaceName != cfg.Gateway.Interface {
 		return fmt.Errorf("network interface does not match configured gateway interface")
 	}
-	actual, err := macosnetwork.ServiceInterface(ctx, service)
+	actual, err := linuxnetwork.ServiceInterface(ctx, service)
 	if err != nil {
 		return err
 	}
@@ -336,14 +336,14 @@ func validateHelperNetworkTarget(ctx context.Context, cfg config.Config, service
 	return nil
 }
 
-func validateHelperManualNetwork(ctx context.Context, cfg config.Config, manual macosnetwork.ManualConfig) error {
+func validateHelperManualNetwork(ctx context.Context, cfg config.Config, manual linuxnetwork.ManualConfig) error {
 	if err := validateHelperNetworkTarget(ctx, cfg, manual.NetworkService, manual.Interface); err != nil {
 		return err
 	}
 	if manual.IPv4 != cfg.Gateway.LANIP {
 		return fmt.Errorf("manual IPv4 does not match configured gateway LAN IP")
 	}
-	return macosnetwork.ValidateManual(manual)
+	return linuxnetwork.ValidateManual(manual)
 }
 
 func requireRootOwnedConfig(path string) error {

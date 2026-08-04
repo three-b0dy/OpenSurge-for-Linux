@@ -6,7 +6,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 )
 
@@ -73,7 +73,7 @@ type RecoveryState struct {
 	OriginalIPv4            string                 `json:"original_ipv4,omitempty"`
 	OriginalRouter          string                 `json:"original_router,omitempty"`
 	RecoveryNotes           string                 `json:"recovery_notes,omitempty"`
-	NetworkSnapshot         *macosnetwork.Snapshot `json:"network_snapshot,omitempty"`
+	NetworkSnapshot         *linuxnetwork.Snapshot `json:"network_snapshot,omitempty"`
 	ClientValidationSkipped bool                   `json:"client_validation_skipped,omitempty"`
 	Required                bool                   `json:"required"`
 	UpdatedAt               time.Time              `json:"updated_at"`
@@ -88,7 +88,7 @@ type GatewayPlan struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Revision      string                `json:"revision"`
 	Topology      string                `json:"topology"`
-	Snapshot      macosnetwork.Snapshot `json:"snapshot"`
+	Snapshot      linuxnetwork.Snapshot `json:"snapshot"`
 	ProtectedIPv4 []string              `json:"protected_ipv4"`
 	DHCPServers   []string              `json:"dhcp_servers"`
 	Warnings      []string              `json:"warnings"`
@@ -103,7 +103,7 @@ type NetworkActionResponse struct {
 
 type NetworkInterfacesResponse struct {
 	SchemaVersion int                            `json:"schema_version"`
-	Interfaces    []macosnetwork.InterfaceOption `json:"interfaces"`
+	Interfaces    []linuxnetwork.InterfaceOption `json:"interfaces"`
 }
 
 type ManualRecoveryFinishRequest struct {

@@ -1,69 +1,39 @@
-# Agent Wiki 索引
+# OpenSurge for Linux agent context
 
-这个 wiki 是 OpenSurge for Mac 面向 agent 的上下文层。它从
-`../sources/` 中整理稳定知识，并指向仓库内仍然作为事实来源的文件。
+OpenSurge is a Linux gateway and control-plane project for Debian 12+ and
+Ubuntu 22.04+ on amd64 and arm64. The current phase establishes configuration,
+Linux network inspection, sysctl forwarding, and an OpenSurge-owned nftables
+table. The gateway lifecycle and installed systemd units are later-phase work.
 
-当任务涉及产品方向、网关行为、透明代理或验证门槛时，从这里开始。
+## Required invariants
 
-## 核心上下文
+- Product name: OpenSurge for Linux; mihomo is the proxy engine.
+- IPv4 is the supported gateway protocol in this phase.
+- `transparent.mode: tun` is the only transparent path and `mihomo.redir_port`
+  remains zero.
+- `isolated_lan` requires a second wired interface or VLAN and drops downstream
+  IPv6 forwarding. `same_lan` and `same_wifi_dhcp` warn about unmanaged IPv6.
+- OpenSurge may change only its named `inet opensurge` nftables table. It must
+  never flush global firewall state or alter another table.
+- `config migrate` produces a candidate on stdout and notes on stderr. It never
+  writes a source or destination file and never changes an upstream router's
+  DHCP state.
 
-- [网关生命周期](concepts/gateway-lifecycle.md)：Mac 如何成为下游 LAN
-  gateway，以及如何停止并恢复。
-- [macOS TUN 透明代理](concepts/macos-tun-transparent-proxy.md)：为什么
-  TUN 是透明代理主线，以及哪些旧旋钮必须保持 inactive。
-- [mihomo profile overlay](concepts/mihomo-profile-overlay.md)：如何导入
-  mihomo 代理/规则 section，同时保持 OpenSurge 接管网关字段。
-- [每设备策略覆盖](concepts/device-policy-overlays.md)：如何以 DHCP reservation 和
-  `SRC-IP-CIDR` 在一个 mihomo 进程中实现独立的设备策略。
-- [Mac 本机流量模式](concepts/local-mac-routing-modes.md)：如何用 source-scoped
-  overlay 实现规则 / 全局 / 直连，同时保持下游设备规则不变。
-- [Mac 本机系统代理协同](concepts/local-system-proxy-coordination.md)：默认关闭的
-  TUN HTTP/HTTPS 兼容层、fail-closed 冲突检查和恢复契约。
-- [GUI 控制面](concepts/gui-control-plane.md)：React Web GUI、SwiftUI 菜单栏
-  launcher、本地 API 与恢复状态的职责边界。
-- 许可证边界：OpenSurge 自有代码采用 `GPL-3.0-only`；随 pkg 分发的独立组件保留
-  各自许可证与对应源码链接，见根目录 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。
-- [验证门槛](concepts/validation-gates.md)：哪些检查能证明哪些结论。
+## Repository map
 
-## 项目形态
+- `internal/config`: Linux defaults, validation, rendering, and candidate migration.
+- `internal/linuxnet`: fixed-command `iproute2` interface/address/neighbor parsing.
+- `internal/nftables`: owned ruleset rendering and named-table management.
+- `internal/sysctl`: `net.ipv4.ip_forward` observation and restoration.
+- `internal/runtime`: Linux artifact paths and persisted runtime state.
+- `internal/controlapi` and `web`: reusable control-plane foundation.
 
-OpenSurge for Mac 正在走向一个开源的 Surge for Mac 风格 macOS gateway。它的
-核心能力是全屋代理：下游设备接入由 Mac 服务的 LAN，从 dnsmasq 获得
-DHCP/DNS，并把流量交给 Mac；mihomo 提供代理行为，macOS pf/sysctl 提供 NAT
-和 forwarding。
+## Verification boundaries
 
-当前仓库是 CLI-driven MVP。把 CLI 当作当前控制面，不要把它误认为最终产品
-边界。
+`make test` and `go test ./...` are unit/build checks. `make web-test` checks the
+web package. Claims about DHCP, DNS, mihomo traffic, nftables forwarding, TUN,
+rollback, or a real host network require the corresponding Linux lab gate once
+that later-phase harness is available.
 
-当前控制面契约优先保持机器可读：`status`、`doctor`、`leases`、`logs`、
-`policies`、`local-routing`、`devices`、`connections`、`providers`、`provider-update` 和 `snapshot` 支持 JSON
-输出。`logs --tail N --format json` 会返回最近的 dnsmasq/mihomo 日志行，并对每个
-日志文件标出存在状态和读取错误。`snapshot --format json` 聚合 status、doctor、
-leases、日志尾部、策略组、连接和 provider 状态，并把 mihomo API 不可用记录在局部
-字段里，适合后续轻 UI 或菜单栏诊断界面复用。
-`start --format json` 和 `stop --format json` 在动作成功后返回结构化成功 payload；
-失败仍保留非零退出码，并在 `--format json` 时把
-`{"command":"...","ok":false,"error":"..."}` 写到 stderr。
-
-## 事实来源
-
-- 公开范围：`README.md`
-- 示例配置：`examples/config.example.yaml`
-- 生命周期代码：`internal/gateway/manager.go`
-- 配置验证：`internal/config/validator.go`
-- mihomo profile 导入：`internal/mihomo/profile.go` 和
-  `docs/agent-wiki/sources/decisions/mihomo-profile-overlay.md`
-- Mac 本机模式：`internal/mihomo/local_routing.go` 和
-  `docs/agent-wiki/sources/decisions/local-mac-routing-modes.md`
-- Mac 本机系统代理：`internal/macosnetwork/system_proxy.go` 和
-  `docs/agent-wiki/sources/decisions/local-system-proxy-coordination.md`
-- Virtual LAN lab：`tests/lab/README.md` 和 `tests/lab/lab.sh`
-- 真实设备 smoke：`tests/real-device/README.md` 和
-  `tests/real-device/smoke.sh`
-- 真实设备 smoke 当前进度：
-  `docs/agent-wiki/sources/validation/real-device-smoke.md`
-- same-LAN TUN smoke：`tests/same-lan/README.md`、
-  `tests/same-lan/smoke.sh` 和
-  `docs/agent-wiki/sources/validation/same-lan-tun-smoke.md`
-
-当这些事实来源的变化会影响未来 agent 判断时，更新这个 wiki。
+Use [docs/linux-migration.md](../../../docs/linux-migration.md) for migration
+semantics and manual mapping requirements.

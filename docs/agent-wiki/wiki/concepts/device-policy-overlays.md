@@ -11,7 +11,7 @@ mihomo YAML”。
 ## 策略模型
 
 - 每台设备必须明确选择 `egress_mode`：`inherit_global` 只保留设备覆盖，未命中流量继续
-  走 imported/managed 网关规则，不跟随 Mac 本机 Rule/Global/Direct 开关；
+  走 imported/managed 网关规则，不跟随本机 Rule/Global/Direct 开关；
   `dedicated` 为公网流量生成并优先使用 `device/<id>/default` selector。
 - `dedicated` 在设备覆盖和默认 selector 之前生成按设备源 IPv4 限定的本地/私网、
   link-local、CGNAT 与 multicast `DIRECT` 保护，避免远端代理吞掉 LAN 访问。
@@ -35,9 +35,9 @@ Profile，只改变该设备引用；ID 冲突时追加数字后缀。
 客户端不提供 hostname 时也不会继续显示为未知设备。
 
 `same_lan` 不产生 OpenSurge DHCP lease。Control API 会从 mihomo 当前连接收集与 gateway
-同 `/24` 的源 IPv4，并在设备登记页用 macOS ARP cache 尽力补 MAC；总览流量 inventory
+同 `/24` 的源 IPv4，并在设备登记页用 Linux neighbor table 尽力补 MAC；总览流量 inventory
 则合并 lease、applied 静态设备与当前观察源。证据必须分层显示为 DHCP 已验证、静态登记、
-流量已观察或邻居已观察。ARP/流量只证明近期观察，不是 MAC 身份认证；未经过 Mac、已经
+流量已观察或邻居已观察。ARP/流量只证明近期观察，不是 MAC 身份认证；未经过 Linux、已经
 离线或经 IPv6 绕过的同 LAN 设备不会因此被自动发现。
 
 `same_lan` 的设备主键仍是稳定 `id`，运行规则只需唯一固定 IPv4；MAC 可以为空，仅作为
@@ -73,7 +73,7 @@ same-Wi‑Fi DHCP 场景还必须将 router、recovery device、LAN proxy 等地
 
 ## 和 imported profile 的关系
 
-Mac 本机 source-scoped 模式规则排在最前，但下游设备源地址不会命中。device override
+本机 source-scoped 模式规则排在最前，但下游设备源地址不会命中。device override
 规则在所有设备模式下都位于 imported/managed 全局规则之前。独立模式的
 设备默认 selector 同样位于全局规则之前；跟随模式没有 default selector；只有旧版兼容
 模式把默认兜底放在全局规则之后、最终 `MATCH` 之前。imported profile 的 `MATCH`
@@ -102,7 +102,7 @@ imported profile 的排序。
 `make lab-test-tun-device-policy` 是数据面门槛：它使用两个 Lima VM，验证 `.101` 与
 `.102` 的固定租约、独立出口优先于全局 `MATCH`、跟随设备不生成 default selector 且
 走全局 `MATCH`；再把跟随设备重载成独立模式，验证两台设备不同的 TUN 出口、互不影响
-的 selector 切换，以及设备级 IP `REJECT`。它还制造 desired drift 并调用真实 `omg reload`，验证网关继续运行、
+的 selector 切换，以及设备级 IP `REJECT`。它还制造 desired drift 并调用真实 `opensurge reload`，验证网关继续运行、
 applied snapshot/state digest 与 desired 收敛、精确 lease identity 仍成立，随后复查两台
 设备 selector 仍相互隔离；同时验证 HTTP-only selector 选中时 UDP/443 的 fail-closed
 `REJECT`。它不需要、也不会为

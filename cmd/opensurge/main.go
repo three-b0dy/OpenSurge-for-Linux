@@ -25,8 +25,6 @@ const defaultConfigPath = "/etc/opensurge/config.yaml"
 var (
 	fetchProxyGroups    = mihomo.FetchProxyGroups
 	selectProxyGroup    = mihomo.SelectProxyGroup
-	fetchLocalRouting   = mihomo.FetchLocalRouting
-	setLocalRouting     = mihomo.SetLocalRouting
 	fetchConnections    = mihomo.FetchConnections
 	fetchProviders      = mihomo.FetchProviders
 	updateProxyProvider = mihomo.UpdateProxyProvider
@@ -69,7 +67,6 @@ func run(args []string) int {
 	outputFormat := fs.String("format", "text", "output format: text or json")
 	policyGroup := fs.String("group", "", "mihomo policy group name")
 	policyName := fs.String("policy", "", "mihomo policy name to select")
-	localMode := fs.String("mode", "", "local Mac routing mode: rule, global, or direct")
 	deviceID := fs.String("device", "", "configured device id")
 	deviceSlot := fs.String("slot", "default", "device policy slot: default or a rule id")
 	providerName := fs.String("provider", "", "mihomo proxy provider name")
@@ -81,6 +78,29 @@ func run(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "format: %v\n", err)
 		return 2
+	}
+	if command == "config migrate" {
+		if len(fs.Args()) != 0 {
+			return writeErrorMessageExit(command, false, 2, "config migrate does not accept positional arguments")
+		}
+		if jsonOutput {
+			return writeErrorMessageExit(command, true, 2, "config migrate writes YAML to stdout and only supports --format text")
+		}
+		source, err := os.ReadFile(*configPath)
+		if err != nil {
+			return writeErrorExit(command, false, 1, "config migrate", err)
+		}
+		candidate, notes, err := config.MigrateMacConfig(source)
+		if err != nil {
+			return writeErrorExit(command, false, 1, "config migrate", err)
+		}
+		if _, err := os.Stdout.Write(candidate); err != nil {
+			return writeErrorExit(command, false, 1, "config migrate", err)
+		}
+		for _, note := range notes {
+			fmt.Fprintf(os.Stderr, "note: %s\n", note)
+		}
+		return 0
 	}
 
 	loadConfig := config.LoadRuntime
@@ -206,9 +226,6 @@ func run(args []string) int {
 		}
 		fmt.Print(formatProxyGroups(groups))
 	case "policy-select":
-		if mihomo.IsLocalRoutingGroup(*policyGroup) {
-			return writeErrorMessageExit(command, jsonOutput, 1, "policy-select: use local-routing-set to change OpenSurge local Mac routing groups")
-		}
 		groups, err := fetchProxyGroups(ctx, cfg)
 		if err != nil {
 			return writeErrorExit(command, jsonOutput, 1, "policy-select", err)
@@ -224,24 +241,6 @@ func run(args []string) int {
 			return writeJSONExit(policySelectJSON{Group: *policyGroup, Selected: *policyName})
 		}
 		fmt.Printf("Policy group %q selected %q\n", *policyGroup, *policyName)
-	case "local-routing":
-		snapshot, err := fetchLocalRouting(ctx, cfg)
-		if err != nil {
-			return writeErrorExit(command, jsonOutput, 1, "local-routing", err)
-		}
-		if jsonOutput {
-			return writeJSONExit(snapshot)
-		}
-		fmt.Print(formatLocalRouting(snapshot))
-	case "local-routing-set":
-		snapshot, err := setLocalRouting(ctx, cfg, *localMode, *policyName)
-		if err != nil {
-			return writeErrorExit(command, jsonOutput, 1, "local-routing-set", err)
-		}
-		if jsonOutput {
-			return writeJSONExit(snapshot)
-		}
-		fmt.Print(formatLocalRouting(snapshot))
 	case "device-policy-select":
 		bundle, err := loadAppliedPolicyBundle(cfg)
 		if err != nil {
@@ -286,9 +285,6 @@ func run(args []string) int {
 		}
 		fmt.Print(formatProviders(providers))
 	case "provider-update":
-		if mihomo.IsLocalRoutingGroup(*providerName) {
-			return writeErrorMessageExit(command, jsonOutput, 1, "provider-update: OpenSurge local Mac routing groups are internal and cannot be refreshed")
-		}
 		provider, err := updateProxyProvider(ctx, cfg, *providerName)
 		if err != nil {
 			return writeErrorExit(command, jsonOutput, 1, "provider-update", err)
@@ -536,23 +532,6 @@ func validatePolicySelection(groups []mihomo.ProxyGroup, groupName, selected str
 	}
 
 	return fmt.Errorf("policy group %q not found (available: %s)", groupName, strings.Join(policyGroupNames(groups), ", "))
-}
-
-func formatLocalRouting(snapshot mihomo.LocalRoutingSnapshot) string {
-	var out strings.Builder
-	fmt.Fprintf(&out, "Mac local traffic mode: %s\n", snapshot.Mode)
-	if snapshot.GlobalGroup != nil {
-		fmt.Fprintf(&out, "Global policy: %s\n", snapshot.GlobalGroup.Selected)
-	}
-	fmt.Fprintf(&out, "UDP behavior: %s\n", snapshot.UDPBehavior)
-	fmt.Fprintf(&out, "Transports: %s\n", strings.Join(snapshot.Transports, ", "))
-	if snapshot.NewConnectionsOnly {
-		out.WriteString("Applies to: new connections\n")
-	}
-	if snapshot.Warning != "" {
-		fmt.Fprintf(&out, "Warning: %s\n", snapshot.Warning)
-	}
-	return out.String()
 }
 
 func loadConfiguredPolicyBundle(cfg config.Config) (device.PolicyBundle, error) {
@@ -1066,7 +1045,7 @@ Commands:
   stop     stop gateway services and clean runtime state
   reload   validate desired configuration, then stop and restart gateway services
   restart-mihomo
-           validate and restart only mihomo, preserving DHCP/DNS, PF, and forwarding
+           validate and restart only mihomo, preserving gateway services and forwarding
   status   print gateway status
   doctor   run environment checks
   leases   print DHCP leases
@@ -1077,10 +1056,6 @@ Commands:
            list mihomo policy groups from the external-controller API
   policy-select --group <name> --policy <name>
            switch the selected policy in a mihomo policy group
-  local-routing
-           print the Mac-only rule/global/direct routing mode
-  local-routing-set --mode <rule|global|direct> [--policy <name>]
-           switch only Mac TUN and loopback explicit-proxy traffic
   device-policy-select --device <id> --slot <default|rule-id> --policy <name>
            switch one configured device's independent policy selector
   connections
@@ -1093,6 +1068,8 @@ Commands:
            print the final mihomo config without starting services
   validate-mihomo
            render and validate the final mihomo config without starting services
+  config migrate
+           print a Linux candidate YAML and mapping notes without writing files
   config validate
            validate the OpenSurge configuration without starting services
 

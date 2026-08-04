@@ -1,7 +1,7 @@
 # mihomo profile overlay
 
 When a task involves importing existing mihomo or Clash-style profiles, keep the
-boundary clear: mihomo remains the proxy engine, but OpenSurge owns the Mac
+boundary clear: mihomo remains the proxy engine, but OpenSurge owns the Linux
 gateway overlay.
 
 ## Modes
@@ -61,18 +61,18 @@ proxy paths.
 Imported profile support is a mihomo config-generation change. Run `make test`
 for code-level coverage. `doctor` includes a `mihomo config render` check so an
 unreadable imported profile or missing `rules` section fails before gateway
-startup. Use `go run ./cmd/omg render-mihomo --config <path>` to inspect the
+startup. Use `go run ./cmd/opensurge render-mihomo --config <path>` to inspect the
 final overlaid mihomo config without root or service startup. Use
-`go run ./cmd/omg validate-mihomo --config <path>` for a stronger non-root check
+`go run ./cmd/opensurge validate-mihomo --config <path>` for a stronger non-root check
 that renders the final config and runs mihomo's own `-t` validation with the same
 `-d` directory OpenSurge uses at startup. This command requires `mihomo.binary`
 in the OpenSurge config to point to an installed mihomo binary.
 
-When mihomo is running, use `omg policies --config <path>` to list policy groups,
-`omg policy-select --config <path> --group <name> --policy <name>` to switch the
-selected member, and `omg connections --config <path>` to inspect active mihomo
-connections. Use `omg providers --config <path>` to inspect proxy/rule
-providers, and `omg provider-update --config <path> --provider <name>` to
+When mihomo is running, use `opensurge policies --config <path>` to list policy groups,
+`opensurge policy-select --config <path> --group <name> --policy <name>` to switch the
+selected member, and `opensurge connections --config <path>` to inspect active mihomo
+connections. Use `opensurge providers --config <path>` to inspect proxy/rule
+providers, and `opensurge provider-update --config <path> --provider <name>` to
 refresh one proxy provider. `policy-select` first reads live groups and rejects
 unknown group or policy names before sending the selection change. These are
 control-plane checks. `make policy-control-test` also proves source-scoped
@@ -95,7 +95,7 @@ explicit mode retains the legacy default after global rules and before terminal
 `make lab-test-tun-device-policy`; template and rule-provider compilation use
 `make test`.
 
-The local-Mac Rule/Global/Direct overlay is inserted before device overrides
+The local Linux Rule/Global/Direct overlay is inserted before device overrides
 without changing the imported top-level rule mode. It owns hidden
 `open-surge/mac-*` selectors and matches both inbound type and local source
 identity, so downstream device sources continue into their existing path.
@@ -111,7 +111,7 @@ it does not prove an external proxy egress.
 `make lab-test-tun-imported-egress` runs the TUN gate with
 `tests/lab/mihomo-profile.imported-tun-egress.yaml`. The fixture uses a local
 HTTP provider to add `egress-proxy`, then the lab switches `TunEgress` from
-`DIRECT` to `egress-proxy` through `omg policy-select`. The direct signals are
+`DIRECT` to `egress-proxy` through `opensurge policy-select`. The direct signals are
 `mihomo.log` entries for `TunEgress[DIRECT]` and `TunEgress[egress-proxy]`, plus
 the controlled proxy observing `CONNECT <host>:443` only after the switch. This
 proves controlled local proxy egress switching through transparent TUN; it does

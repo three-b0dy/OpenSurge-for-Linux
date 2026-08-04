@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 )
 
@@ -142,7 +142,7 @@ func TestObservedLANDevicesJoinsActiveSourcesToNeighborMAC(t *testing.T) {
 		{Metadata: map[string]any{"sourceIP": "192.168.5.123"}},
 		{Metadata: map[string]any{"sourceIP": "198.18.0.1"}},
 	}}
-	neighbors := []macosnetwork.Neighbor{{IP: "192.168.5.124", MAC: "AA:BB:CC:DD:EE:24", Interface: "en0"}}
+	neighbors := []linuxnetwork.Neighbor{{IP: "192.168.5.124", MAC: "AA:BB:CC:DD:EE:24", Interface: "en0"}}
 
 	observed := observedLANDevices(snapshot, neighbors, "192.168.5.123")
 	if len(observed) != 2 || observed[0].IP != "192.168.5.124" || observed[0].MAC != "aa:bb:cc:dd:ee:24" || !observed[0].NeighborObserved || observed[0].ActiveConnections != 2 {
@@ -154,7 +154,7 @@ func TestObservedLANDevicesJoinsActiveSourcesToNeighborMAC(t *testing.T) {
 }
 
 func TestObservedLANDevicesIncludesNeighborOnlyEvidenceForRegisteredIPOnlyDevice(t *testing.T) {
-	neighbors := []macosnetwork.Neighbor{
+	neighbors := []linuxnetwork.Neighbor{
 		{IP: "192.168.5.137", MAC: "aa:bb:cc:dd:ee:37"},
 		{IP: "192.168.5.138", MAC: "aa:bb:cc:dd:ee:38"},
 	}
@@ -170,7 +170,7 @@ func TestObservedLANDevicesIncludesNeighborOnlyEvidenceForRegisteredIPOnlyDevice
 }
 
 func TestObservedLANDevicesDoesNotGuessWhenOneIPHasConflictingNeighborMACs(t *testing.T) {
-	neighbors := []macosnetwork.Neighbor{
+	neighbors := []linuxnetwork.Neighbor{
 		{IP: "192.168.5.137", MAC: "aa:bb:cc:dd:ee:37"},
 		{IP: "192.168.5.137", MAC: "aa:bb:cc:dd:ee:99"},
 	}

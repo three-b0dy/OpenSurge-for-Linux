@@ -23,7 +23,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
@@ -35,9 +35,9 @@ type Options struct {
 	Runner            ActionRunner
 	NetworkRunner     NetworkRunner
 	ConfigRunner      ConfigurationRunner
-	DiscoverNetwork   func(context.Context, string, string) (macosnetwork.Snapshot, error)
-	ListInterfaces    func(context.Context) ([]macosnetwork.InterfaceOption, error)
-	DiscoverNeighbors func(context.Context, string) ([]macosnetwork.Neighbor, error)
+	DiscoverNetwork   func(context.Context, string, string) (linuxnetwork.Snapshot, error)
+	ListInterfaces    func(context.Context) ([]linuxnetwork.InterfaceOption, error)
+	DiscoverNeighbors func(context.Context, string) ([]linuxnetwork.Neighbor, error)
 	PingRouter        func(context.Context, string) error
 	Static            http.Handler
 	Credentials       SourceCredentialStore
@@ -50,9 +50,9 @@ type Server struct {
 	runner            ActionRunner
 	networkRunner     NetworkRunner
 	configRunner      ConfigurationRunner
-	discoverNetwork   func(context.Context, string, string) (macosnetwork.Snapshot, error)
-	listInterfaces    func(context.Context) ([]macosnetwork.InterfaceOption, error)
-	discoverNeighbors func(context.Context, string) ([]macosnetwork.Neighbor, error)
+	discoverNetwork   func(context.Context, string, string) (linuxnetwork.Snapshot, error)
+	listInterfaces    func(context.Context) ([]linuxnetwork.InterfaceOption, error)
+	discoverNeighbors func(context.Context, string) ([]linuxnetwork.Neighbor, error)
 	pingRouter        func(context.Context, string) error
 	static            http.Handler
 	credentials       SourceCredentialStore
@@ -94,11 +94,7 @@ func New(options Options) (*Server, error) {
 		return nil, fmt.Errorf("control API must listen on loopback IPv4")
 	}
 	if options.StoreDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		options.StoreDir = filepath.Join(home, "Library", "Application Support", "OpenSurge")
+		options.StoreDir = "/var/lib/opensurge"
 	}
 	store := NewStore(options.StoreDir)
 	if err := store.Ensure(); err != nil {
@@ -109,33 +105,33 @@ func New(options Options) (*Server, error) {
 		return nil, err
 	}
 	if options.Runner == nil {
-		options.Runner = HelperClient{SocketPath: "/var/run/opensurge/helper.sock"}
+		options.Runner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
 	}
 	if options.NetworkRunner == nil {
 		if runner, ok := options.Runner.(NetworkRunner); ok {
 			options.NetworkRunner = runner
 		} else {
-			options.NetworkRunner = HelperClient{SocketPath: "/var/run/opensurge/helper.sock"}
+			options.NetworkRunner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
 		}
 	}
 	if options.ConfigRunner == nil {
 		if runner, ok := options.Runner.(ConfigurationRunner); ok {
 			options.ConfigRunner = runner
 		} else {
-			options.ConfigRunner = HelperClient{SocketPath: "/var/run/opensurge/helper.sock"}
+			options.ConfigRunner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
 		}
 	}
 	if options.DiscoverNetwork == nil {
-		options.DiscoverNetwork = macosnetwork.Discover
+		options.DiscoverNetwork = linuxnetwork.Discover
 	}
 	if options.ListInterfaces == nil {
-		options.ListInterfaces = macosnetwork.ListInterfaces
+		options.ListInterfaces = linuxnetwork.ListInterfaces
 	}
 	if options.DiscoverNeighbors == nil {
-		options.DiscoverNeighbors = macosnetwork.DiscoverNeighbors
+		options.DiscoverNeighbors = linuxnetwork.DiscoverNeighbors
 	}
 	if options.PingRouter == nil {
-		options.PingRouter = macosnetwork.PingRouter
+		options.PingRouter = linuxnetwork.PingRouter
 	}
 	if options.Credentials == nil {
 		fileCredentials := NewFileCredentialStore(store.Dir())
@@ -1047,7 +1043,7 @@ func (s *Server) handleRecoveryPrepare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "network_discovery_failed", err.Error())
 		return
 	}
-	if err := macosnetwork.ValidateManual(manualConfigForSnapshot(cfg, snapshot)); err != nil {
+	if err := linuxnetwork.ValidateManual(manualConfigForSnapshot(cfg, snapshot)); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "static_config_invalid", fmt.Sprintf("configured Mac LAN IPv4 %s is incompatible with router %s and subnet mask %s: %v", cfg.Gateway.LANIP, snapshot.Router, snapshot.SubnetMask, err))
 		return
 	}
@@ -1083,7 +1079,7 @@ func (s *Server) handleApplyStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	current, err := s.discoverNetwork(r.Context(), manual.NetworkService, manual.Interface)
 	if err == nil {
-		err = macosnetwork.VerifyManual(current, manual)
+		err = linuxnetwork.VerifyManual(current, manual)
 	}
 	if err != nil {
 		message := fmt.Sprintf("Mac 仍未使用预期的固定 IPv4 %s。请打开“系统设置 → 网络 → %s → 详细信息 → TCP/IP”，确认“配置 IPv4”为“手动”且 IPv4 地址正确，然后重试。检查结果：%v", manual.IPv4, manual.NetworkService, err)
@@ -1102,8 +1098,8 @@ func (s *Server) handleApplyStatic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, NetworkActionResponse{SchemaVersion: SchemaVersion, Recovery: state})
 }
 
-func manualConfigForSnapshot(cfg config.Config, snapshot macosnetwork.Snapshot) macosnetwork.ManualConfig {
-	return macosnetwork.ManualConfig{NetworkService: snapshot.NetworkService, Interface: snapshot.Interface, IPv4: cfg.Gateway.LANIP, SubnetMask: snapshot.SubnetMask, Router: snapshot.Router, DNS: snapshot.DNS}
+func manualConfigForSnapshot(cfg config.Config, snapshot linuxnetwork.Snapshot) linuxnetwork.ManualConfig {
+	return linuxnetwork.ManualConfig{NetworkService: snapshot.NetworkService, Interface: snapshot.Interface, IPv4: cfg.Gateway.LANIP, SubnetMask: snapshot.SubnetMask, Router: snapshot.Router, DNS: snapshot.DNS}
 }
 
 func (s *Server) handleDHCPProbe(w http.ResponseWriter, r *http.Request) {

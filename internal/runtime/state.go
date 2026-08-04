@@ -19,24 +19,6 @@ type State struct {
 	StartedAt             time.Time `json:"started_at"`
 }
 
-// SystemProxySnapshot and SystemProxySetting remain as legacy type definitions
-// for the retained macOS package. Linux runtime State no longer stores them.
-type SystemProxySnapshot struct {
-	NetworkService       string             `json:"network_service"`
-	Interface            string             `json:"interface"`
-	HTTP                 SystemProxySetting `json:"http"`
-	HTTPS                SystemProxySetting `json:"https"`
-	AutoConfigEnabled    bool               `json:"auto_config_enabled,omitempty"`
-	AutoDiscoveryEnabled bool               `json:"auto_discovery_enabled,omitempty"`
-}
-
-type SystemProxySetting struct {
-	Enabled       bool   `json:"enabled"`
-	Server        string `json:"server,omitempty"`
-	Port          int    `json:"port,omitempty"`
-	Authenticated bool   `json:"authenticated,omitempty"`
-}
-
 func LoadState(path string) (State, bool, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

@@ -19,7 +19,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnetwork"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
@@ -454,7 +454,7 @@ func TestAbandonTakeoverRestoresMacDHCPWhenServerAnswers(t *testing.T) {
 		Stage:         RecoveryMacStatic,
 		Topology:      config.GatewayModeSameWiFiDHCP,
 		Required:      true,
-		NetworkSnapshot: &macosnetwork.Snapshot{
+		NetworkSnapshot: &linuxnetwork.Snapshot{
 			NetworkService: "Wi-Fi",
 			Interface:      "en0",
 		},
@@ -484,7 +484,7 @@ func TestAbandonTakeoverFinishesStaticWhenNoServerAnswers(t *testing.T) {
 		Stage:         RecoveryRouterDHCPDisabledConfirmed,
 		Topology:      config.GatewayModeSameWiFiDHCP,
 		Required:      true,
-		NetworkSnapshot: &macosnetwork.Snapshot{
+		NetworkSnapshot: &linuxnetwork.Snapshot{
 			NetworkService: "Wi-Fi",
 			Interface:      "en0",
 		},
@@ -514,7 +514,7 @@ func TestFailedSameWiFiStartPreservesRetryOrAbandonRecovery(t *testing.T) {
 		Stage:         RecoveryRouterDHCPDisabledConfirmed,
 		Topology:      config.GatewayModeSameWiFiDHCP,
 		Required:      true,
-		NetworkSnapshot: &macosnetwork.Snapshot{
+		NetworkSnapshot: &linuxnetwork.Snapshot{
 			NetworkService: "Wi-Fi",
 			Interface:      "en0",
 		},
@@ -534,8 +534,8 @@ func TestApplyStaticWarnsWhenMacStillUsesDHCP(t *testing.T) {
 	if response := performAuthorized(server, http.MethodPost, "/api/v1/recovery/prepare", []byte(`{"network_service":"Wi-Fi"}`)); response.Code != http.StatusOK {
 		t.Fatalf("prepare: %d %s", response.Code, response.Body.String())
 	}
-	server.discoverNetwork = func(context.Context, string, string) (macosnetwork.Snapshot, error) {
-		return macosnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: macosnetwork.IPv4ModeDHCP, IPv4: "192.168.1.10", SubnetMask: "255.255.255.0", Router: "192.168.1.1"}, nil
+	server.discoverNetwork = func(context.Context, string, string) (linuxnetwork.Snapshot, error) {
+		return linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: linuxnetwork.IPv4ModeDHCP, IPv4: "192.168.1.10", SubnetMask: "255.255.255.0", Router: "192.168.1.1"}, nil
 	}
 
 	response := performAuthorized(server, http.MethodPost, "/api/v1/network/apply-static", nil)
@@ -555,7 +555,7 @@ func TestManualRecoveryFinishRequiresExplicitConfirmation(t *testing.T) {
 	server, network := newTestServerWithNetwork(t)
 	state := RecoveryState{
 		Stage: RecoveryGatewayStopped, Required: true,
-		NetworkSnapshot: &macosnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
+		NetworkSnapshot: &linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
 	}
 	if err := server.store.SaveRecovery(state); err != nil {
 		t.Fatal(err)
@@ -575,7 +575,7 @@ func TestManualRecoveryFinishRestoresMacDHCPAndRecordsOverride(t *testing.T) {
 	server, network := newTestServerWithNetwork(t)
 	state := RecoveryState{
 		Stage: RecoveryGatewayStopped, Required: true, RecoveryNotes: "client evidence saved",
-		NetworkSnapshot: &macosnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
+		NetworkSnapshot: &linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
 	}
 	if err := server.store.SaveRecovery(state); err != nil {
 		t.Fatal(err)
@@ -600,7 +600,7 @@ func TestRecoveryCanFinishWithStaticIPv4WithoutDHCPActions(t *testing.T) {
 			server, network := newTestServerWithNetwork(t)
 			state := RecoveryState{
 				Stage: stage, Required: true, RecoveryNotes: "gateway stopped",
-				NetworkSnapshot: &macosnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
+				NetworkSnapshot: &linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0"},
 			}
 			if err := server.store.SaveRecovery(state); err != nil {
 				t.Fatal(err)
@@ -1511,8 +1511,8 @@ func TestSameLANDevicesEndpointListsSourcesCurrentlyPassingThroughMac(t *testing
 			{Metadata: map[string]any{"sourceIP": "192.168.2.20"}},
 		}}, nil
 	}
-	server.discoverNeighbors = func(context.Context, string) ([]macosnetwork.Neighbor, error) {
-		return []macosnetwork.Neighbor{{IP: "192.168.1.137", MAC: "AA:BB:CC:DD:EE:37", Interface: "en0"}}, nil
+	server.discoverNeighbors = func(context.Context, string) ([]linuxnetwork.Neighbor, error) {
+		return []linuxnetwork.Neighbor{{IP: "192.168.1.137", MAC: "AA:BB:CC:DD:EE:37", Interface: "en0"}}, nil
 	}
 
 	response := performAuthorized(server, http.MethodGet, "/api/v1/devices", nil)
@@ -1579,16 +1579,16 @@ runtime:
 		t.Fatal(err)
 	}
 	network := &fakeNetworkRunner{}
-	discover := func(context.Context, string, string) (macosnetwork.Snapshot, error) {
-		mode := macosnetwork.IPv4ModeDHCP
+	discover := func(context.Context, string, string) (linuxnetwork.Snapshot, error) {
+		mode := linuxnetwork.IPv4ModeDHCP
 		if network.manual.IPv4 != "" {
-			mode = macosnetwork.IPv4ModeManual
+			mode = linuxnetwork.IPv4ModeManual
 		}
-		return macosnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: mode, IPv4: "192.168.1.20", SubnetMask: "255.255.255.0", Router: "192.168.1.1", DNS: []string{"192.168.1.1"}}, nil
+		return linuxnetwork.Snapshot{NetworkService: "Wi-Fi", Interface: "en0", IPv4Mode: mode, IPv4: "192.168.1.20", SubnetMask: "255.255.255.0", Router: "192.168.1.1", DNS: []string{"192.168.1.1"}}, nil
 	}
-	server, err := New(Options{ConfigPath: configPath, Addr: "127.0.0.1:61767", StoreDir: filepath.Join(dir, "store"), Runner: fakeRunner{}, NetworkRunner: network, ConfigRunner: fakeConfigurationRunner{}, DiscoverNetwork: discover, ListInterfaces: func(context.Context) ([]macosnetwork.InterfaceOption, error) {
-		return []macosnetwork.InterfaceOption{{Interface: "en0", NetworkService: "Wi-Fi"}, {Interface: "en7", NetworkService: "USB LAN"}}, nil
-	}, DiscoverNeighbors: func(context.Context, string) ([]macosnetwork.Neighbor, error) { return []macosnetwork.Neighbor{}, nil }, PingRouter: func(context.Context, string) error { return nil }, Static: http.NotFoundHandler(), Credentials: &memoryCredentialStore{}})
+	server, err := New(Options{ConfigPath: configPath, Addr: "127.0.0.1:61767", StoreDir: filepath.Join(dir, "store"), Runner: fakeRunner{}, NetworkRunner: network, ConfigRunner: fakeConfigurationRunner{}, DiscoverNetwork: discover, ListInterfaces: func(context.Context) ([]linuxnetwork.InterfaceOption, error) {
+		return []linuxnetwork.InterfaceOption{{Interface: "en0", NetworkService: "Wi-Fi"}, {Interface: "en7", NetworkService: "USB LAN"}}, nil
+	}, DiscoverNeighbors: func(context.Context, string) ([]linuxnetwork.Neighbor, error) { return []linuxnetwork.Neighbor{}, nil }, PingRouter: func(context.Context, string) error { return nil }, Static: http.NotFoundHandler(), Credentials: &memoryCredentialStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1677,13 +1677,13 @@ func (fakeConfigurationRunner) ApplyControlConfig(_ context.Context, path, revis
 }
 
 type fakeNetworkRunner struct {
-	manual       macosnetwork.ManualConfig
+	manual       linuxnetwork.ManualConfig
 	dhcpRestored bool
 	servers      []string
 	probeCount   int
 }
 
-func (f *fakeNetworkRunner) SetManual(_ context.Context, _ string, cfg macosnetwork.ManualConfig) error {
+func (f *fakeNetworkRunner) SetManual(_ context.Context, _ string, cfg linuxnetwork.ManualConfig) error {
 	f.manual = cfg
 	return nil
 }

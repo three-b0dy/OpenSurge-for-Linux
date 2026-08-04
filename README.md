@@ -1,484 +1,56 @@
-<div align="center">
-  <img src="apps/menubar/Resources/OpenSurgeAppIcon.png" width="96" height="96" alt="OpenSurge for Mac App 图标">
-  <h1>OpenSurge for Mac</h1>
-  <p><strong>把 Mac 变成可按设备分流的 Surge 风格全屋透明代理网关——既可作为旁路由让指定设备手动接入，也支持 DHCP/DNS 自动接管</strong></p>
-  <p>
-    <a href="https://github.com/YTwsy/OpenSurge-for-Mac/releases"><img alt="最新版本" src="https://img.shields.io/github/v/release/YTwsy/OpenSurge-for-Mac?style=flat-square"></a>
-    <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-000000?style=flat-square&amp;logo=apple">
-    <img alt="提供 Apple Silicon 与 Intel 安装包" src="https://img.shields.io/badge/Apple%20Silicon%20%7C%20Intel-packages-6f42c1?style=flat-square&amp;logo=apple">
-    <a href="LICENSE"><img alt="GPL-3.0-only" src="https://img.shields.io/badge/license-GPL--3.0--only-2ea44f?style=flat-square"></a>
-  </p>
-  <p>
-    <strong>简体中文</strong> · <a href="README.en.md">English</a>
-  </p>
-  <p>
-    <a href="https://github.com/YTwsy/OpenSurge-for-Mac/releases">下载</a> ·
-    <a href="docs/app-user-guide.zh-CN.md">App 指南</a> ·
-    <a href="#能力">能力</a> ·
-    <a href="#每设备策略">每设备策略</a> ·
-    <a href="#web-gui-与菜单栏-app">Web GUI</a> ·
-    <a href="#ai-agent-友好工作区">Agent 工作区</a>
-  </p>
-  <table width="100%">
-    <tr>
-      <td width="66%" valign="top">
-        <img src="docs/images/opensurge-dashboard.png" width="100%" alt="OpenSurge 全屋网关主界面">
-      </td>
-      <td width="34%" valign="top">
-        <img src="docs/images/opensurge-policies.png" width="100%" alt="OpenSurge 策略与节点健康页面">
-        <br>
-        <img src="docs/images/opensurge-devices.png" width="100%" alt="OpenSurge 每设备策略页面">
-      </td>
-    </tr>
-  </table>
-</div>
+# OpenSurge for Linux
 
-OpenSurge for Mac 是一个开源的 Surge 风格 macOS 网关与控制面。多数用户可以先从
-旁路由模式开始：主路由 DHCP 保持开启，只让需要接入的设备使用稳定 IPv4，并把网关和
-DNS 指向 Mac。需要让同一局域网的设备自动接入时，也可以选择局域网 DHCP 接管；有独立
-AP、SSID 或 VLAN 时，则可以使用独立下游 LAN。
+OpenSurge 是一个面向 Linux 的 Surge 风格家庭网关控制面。当前仓库建立
+配置契约、mihomo 配置渲染、Linux 网络适配器和 OpenSurge 专属 nftables
+规则；完整网关生命周期与 systemd 单元仍在后续阶段实现。
 
-无论采用哪种模式，你都可以为已登记设备配置不同的出口策略：手机和 Mac 一起走规则
-分流、游戏机连美服、电视走流媒体节点。在局域网 DHCP 接管和独立下游 LAN 模式下，
-接入相应网络的手机、电视、PS5 和 VR 设备，都可以自动从 Mac 获取 DHCP/DNS，无需逐台
-修改网关和 DNS。
+## 支持范围
 
-| 模式 | 适合场景 | 对现有网络的影响 |
+- Debian 12+、Ubuntu 22.04+。
+- amd64、arm64。
+- IPv4 是当前网关数据面的支持协议。
+- 透明代理唯一使用 mihomo TUN；`mihomo.redir_port` 必须保持为 `0`。
+- 防火墙只允许 OpenSurge 操作自己的 `inet opensurge` nftables table，不会
+  清空系统全局规则。
+
+## 网络模式
+
+| 模式 | 用途 | 约束 |
 | --- | --- | --- |
-| **旁路由模式（常用，推荐首次体验）** | 先接入手机、电视、游戏机等指定设备 | 主路由 DHCP 保持开启；指定设备使用稳定 IPv4，并手工设置网关和 DNS |
-| **局域网 DHCP 接管（进阶 · 自动接入）** | 希望同一 LAN 的设备自动使用 OpenSurge | 需要按引导关闭主路由 DHCP，停止时按恢复流程重新开启 |
-| **独立下游 LAN** | 独立 AP、SSID 或 VLAN | 不改变现有 LAN 的 DHCP；Mac 为独立下游网络提供 DHCP/DNS 和网关 |
+| `isolated_lan` | 独立下游网络 | 需要第二块有线网卡或 VLAN；OpenSurge 提供下游 IPv4、DHCP、DNS 和 NAT。 |
+| `same_lan` | 同一局域网旁路由 | 上下游使用同一接口，DHCP 必须关闭；只对明确配置的 IPv4 路径负责。 |
+| `same_wifi_dhcp` | 已确认停用上游 DHCP 的共享接口 | 必须显式确认路由器 DHCP 已关闭；停止后不会替用户重新开启路由器 DHCP。 |
 
-- 可导入已有的 mihomo 配置或订阅，保留原有节点、代理组和规则
-- Web GUI 实时展示每台设备的连接、上下行流量和实际出口链；菜单栏随时查看网关状态与恢复提醒。
+`isolated_lan` 不提供下游 IPv6 配置并丢弃下游 IPv6 forwarding。其余模式
+会提示未托管的 IPv6 路径，不把 IPv6 绕行误报为已验证。
 
-底层由 dnsmasq 提供 DHCP/DNS，mihomo 作为代理引擎，macOS pf 与 IPv4
-forwarding 提供原生网关路径。
-
-这个仓库也被有意设计成一个
-[AI Agent 友好工作区](#ai-agent-友好工作区)：项目知识与代码一起版本化，高风险
-网络行为有可执行的证据门槛，Virtual Lab 与真实设备产生的证据会回流到下一轮工程
-循环。
-
-<details>
-  <summary><strong>十张图带你了解 OpenSurge</strong></summary>
-
-  <p>左右滚动查看完整图文。</p>
-
-  <pre><img src="docs/promo/xiaohongshu/final-10/01-cover.png" width="240" alt="OpenSurge for Mac 介绍封面"><img src="docs/promo/xiaohongshu/final-10/02-pain-points.png" width="240" alt="全屋网络的常见痛点"><img src="docs/promo/xiaohongshu/final-10/03-dhcp-explainer.png" width="240" alt="DHCP 工作原理"><img src="docs/promo/xiaohongshu/final-10/04-default-gateway.png" width="240" alt="默认网关工作原理"><img src="docs/promo/xiaohongshu/final-10/05-device-routing.png" width="240" alt="按设备分流"><img src="docs/promo/xiaohongshu/final-10/06-network-modes.png" width="240" alt="OpenSurge 网络模式"><img src="docs/promo/xiaohongshu/final-10/07-dhcp-takeover-steps.png" width="240" alt="DHCP 接管步骤"><img src="docs/promo/xiaohongshu/final-10/08-device-egress.png" width="240" alt="设备出口策略"><img src="docs/promo/xiaohongshu/final-10/09-dashboard.png" width="240" alt="OpenSurge 控制面板"><img src="docs/promo/xiaohongshu/final-10/10-closing.png" width="240" alt="OpenSurge for Mac 结语"></pre>
-</details>
-
-## 能力
-
-**友好的 App 体验**
-
-- 通过 macOS 菜单栏 App 随时查看状态、接收网络恢复提醒并打开本地 Web GUI；再次打开
-  `/Applications/OpenSurge.app` 会直接展开与菜单栏图标相同的状态面板；
-- 在一个控制面中完成订阅导入、网络设置、设备分流、节点健康、连通性检查与诊断；
-- 使用恢复状态机引导局域网 DHCP 接管的启动、客户端验收、停止和网络恢复。
-
-第一次使用请参阅 [OpenSurge for Mac App 使用指南](docs/app-user-guide.zh-CN.md)。遇到常见
-网络、TUN 或设备配置问题时，请参阅 [常见问题](docs/faq.zh-CN.md)。
-
-**网关与代理**
-
-- 启停 DHCP/DNS、mihomo、pf NAT 与 IPv4 forwarding，并带 rollback；
-- 通过 mihomo `mixed-port` 提供显式代理；
-- 通过 mihomo TUN 提供 macOS 透明代理；
-- 在不改变下游设备的前提下，为 Mac 本机经 TUN/显式代理的新连接切换
-  **规则 / 全局 / 直连**；默认不修改 macOS 系统代理，也可在 TUN 模式下显式启用
-  HTTP/HTTPS 系统代理协同，兼容 SafeDNS、DNS Proxy 等 Network Extension 干扰
-  TUN-only 本机 DNS 的场景；
-- DHCP 接管模式为带 MAC 的登记设备生成固定 IPv4 租约；旁路由模式（手工网关）
-  允许只按主路由侧保持稳定的静态 IPv4 登记设备，MAC 是可选身份信息，两者都可使用
-  独立出口策略。
-
-**可观测性**
-
-- 把活跃会话流量归属到 DHCP 设备或同 LAN 的静态登记/当前观察设备，显示每设备
-  连接数、实时上下行速率、累计字节与占主要流量的 mihomo 出口链；
-- 集中检测代理节点可达性/延迟，并从健康视图切换已应用的 Selector；
-- 通过 applied mihomo mixed-port 和当前 Mac 本机模式探测固定真实服务目录，展示
-  三轮中位延迟、命中规则与实际出口链；
-- 查看与切换策略组、查看 imported proxy/rule provider 状态、查看当前连接；
-- 输出文本/JSON 形式的 status / doctor / logs / snapshot，并收集允许局部失败的
-  JSON snapshot 供诊断与 UI 使用。
-
-**安全与验证**
-
-- 配置校验、TUN-only 透明代理、rollback 与明确的恢复契约；
-- 在接触普通 LAN 前，先用隔离的虚拟 LAN lab 验证高风险网络行为。
-
-## 每设备策略
-
-一个 mihomo 进程可以对已登记的 LAN 设备应用独立策略。DHCP 接管模式会为带 MAC 的设备
-配置固定 IPv4 租约；旁路由模式只需主路由侧保持稳定的静态 IPv4，MAC 可留空，并可从
-当前经过 Mac 的流量与 ARP 邻居观察辅助登记。切换到 DHCP 模式时，GUI 会要求确认当前
-可观察到的 MAC；仍无 MAC 的登记会保留，但设备专属策略暂停，补全 MAC 后恢复。当前拓扑中
-身份信息充分的设备会生成各自的 mihomo selector group 和 `SRC-IP-CIDR` 规则。可选 JSON
-策略文件让每台设备要么跟随网关规则，要么在
-全局规则之前走设备专属 selector；它也支持 `REJECT` 这类设备专属动作，以及按
-域名/IP/协议/端口/rule-provider 叠加的规则覆盖。dedicated 模式下，本地/私有目标
-保持直连。Mac 本机的规则 / 全局 / 直连开关不改变这些下游规则；详见
-[Mac 本机流量模式](docs/local-mac-routing.zh-CN.md)。
-
-OpenSurge 有意不内置家庭模板或第三方规则列表；策略内容由操作者提供，空 starter
-文件也是合法配置。JSON 模型、优先级、CLI 命令和验证边界见
-[每设备策略覆盖](docs/device-policy.zh-CN.md)。
-
-## Web GUI 与菜单栏 App
-
-通过安装包使用 OpenSurge 时，请从
-[OpenSurge for Mac App 使用指南](docs/app-user-guide.zh-CN.md)开始。
-
-本地 Control API、React Web GUI 和只读 SwiftUI 菜单栏 launcher 已进入仓库。开发构建：
+## CLI
 
 ```sh
-make web-install
-make control-build
-./bin/opensurge-control --config examples/config.example.yaml
-make menubar-build
+go run ./cmd/opensurge config validate --config examples/config.example.yaml
+go run ./cmd/opensurge config migrate --config /path/to/old-config.yaml > candidate.yaml
+go run ./cmd/opensurge doctor --config examples/config.example.yaml
 ```
 
-控制服务只监听 `127.0.0.1`，启动时会输出一次性 Web GUI 链接。菜单栏 App 显示
-状态、恢复警报并打开 Web GUI，不提供网关 start/stop 或策略切换。它区分“只退出菜单栏
-App”和“退出 OpenSurge”：后者只在网关数据面已经停止时退出菜单栏 App 与用户级
-Control Service；系统 launchd 托管的 root Helper 保持空闲加载，下次打开无需再次授权。
-菜单栏还提供独立的“卸载 OpenSurge”入口：只要网关已经停止即可通过 macOS 管理员授权
-移除 App、Control Service 与 root Helper，并可选择保留配置数据供以后重新安装或彻底删除。
-架构、安全边界与构建说明见 [Web GUI 与菜单栏 App](docs/gui-architecture.zh-CN.md)。
-Web GUI 内置 applied 配置 + 当前 Mac 本机模式的连通性页面，并提供 Net.Coffee 的
-独立浏览器本机检测入口；两者都不会被描述成下游设备网关规则或 DHCP/DNS/TUN 路径
-已经验收。
+`config migrate` 只读取源文件，把候选 YAML 写到 stdout，把需要人工确认的
+映射写到 stderr；它不会写入或覆盖任何文件。迁移后必须人工映射下游接口、
+上游接口和管理监听 IPv4 地址，再运行 `config validate`。迁移不会改变上游
+路由器的 DHCP 状态。
 
-`make gui-installer` 会在取得真实 mihomo、dnsmasq 二进制后构建 macOS 安装包。
-Developer ID 签名和 notarization 必须显式提供发布凭据。GitHub 正式发布同时提供文件名中
-明确带有 `arm64-unsigned.pkg` 与 `x86_64-unsigned.pkg` 的架构专用构建，但不能把正式
-Release 描述成已经签名、已经 notarize 或可被 Gatekeeper 直接放行的安装包。
+默认配置路径是 `/etc/opensurge/config.yaml`。默认运行数据目录为
+`/var/lib/opensurge`，运行时 socket 方向为 `/run/opensurge`。
 
-### 安装 GitHub 未签名正式发布包
-
-当前正式发布同时提供 Apple Silicon 与 Intel Mac 安装包。请从对应 GitHub Release 下载
-`arm64-unsigned.pkg`（Apple Silicon）或 `x86_64-unsigned.pkg`（Intel），以及
-`SHA256SUMS`。可运行 `shasum -a 256 -c SHA256SUMS` 核对已下载文件，并使用以下命令
-验证所选安装包的 GitHub 构建来源：
+## 开发验证
 
 ```sh
-gh attestation verify OpenSurge-for-Mac-*-arm64-unsigned.pkg \
-  -R YTwsy/OpenSurge-for-Mac
-gh attestation verify OpenSurge-for-Mac-*-x86_64-unsigned.pkg \
-  -R YTwsy/OpenSurge-for-Mac
+make test
+make web-test
+make build
 ```
 
-双击安装包。如果 Gatekeeper 阻止安装，进入**系统设置 → 隐私与安全性**，选择
-**仍要打开**并完成身份验证，然后再次打开同一个安装包。不要全局关闭 Gatekeeper，
-也不要递归删除 quarantine。使用管理员账户完成 Installer 后，从 `/Applications`
-打开 **OpenSurge**。安装过程会启动本地 helper 与 Control Service，但网关
-仍保持停止，只有在控制面中明确操作才会启动。
+当前代码阶段提供通用 Control API/Web GUI 基础和 Linux 网络原语；Debian
+软件包、已安装的 systemd gateway 服务以及生产部署单元尚未实现，不应按可
+安装发行版对待。长期方向是以 nftables、iproute2 和 systemd 为 Linux 服务
+基础，并在后续阶段接入网关生命周期与 Linux 实验室验证。
 
-pkg 升级会在同一 LAN DHCP 恢复未完成时拒绝执行。替换 payload 前，preinstall 先停止
-菜单栏 App 以阻断 Control Service 自动唤醒，再卸载用户级 Control Service；随后使用
-当前已安装的 `omg stop` 清理网关，最后
-卸载 root helper。升级会保留现有配置、导入源、策略数据和 runtime 历史；只有首次安装
-才会用包内示例生成 `config.yaml`。
-
-## 透明代理
-
-macOS 上支持的透明代理路径是 TUN。mihomo `redir-port` 和 PF TCP 重定向被
-有意禁用，因为当前 Darwin 构建在运行时报告 redir 不受支持。请保持
-`mihomo.redir_port` 和 `pf.redirect_tcp_to` 为 `0`，并通过
-`transparent.mode: "tun"` 启用透明代理。
-
-OpenSurge 不会在启动前根据现有 utun 或公网路由猜测冲突。实际启动会等待 mihomo
-运行时确认 TUN ready；失败时给进程短暂清理窗口、回滚网关运行时，并根据实际
-TUN 错误补充冲突路由的接口/网关信息。默认不支持两个全局 TUN 同时占有公网路由。
-
-## mihomo profile
-
-OpenSurge for Mac 可以渲染托管的 mihomo 配置，也可以导入已有 mihomo profile。
-在 imported 模式下，OpenSurge 仍然接管 LAN 绑定、`allow-lan`、DNS 监听与
-fake-IP 网段、TUN、`external-controller` 和 runtime 路径等网关关键字段。导入的
-profile 会贡献 `proxies`、`proxy-providers`、`proxy-groups`、`rule-providers`、
-`rules`，以及不改变网关边界的 DNS 解析器/过滤字段。保留
-`nameserver-policy`、`proxy-server-nameserver`、`fake-ip-filter` 等字段，可以让依赖
-专用 DNS 的代理节点域名继续正确解析，同时不允许 profile 替换网关 DNS 监听或
-TUN DNS 契约。
-
-```yaml
-mihomo:
-  profile_mode: "imported"
-  profile: "./profiles/home.yaml"
-```
-
-相对形式的 `mihomo.profile` 会基于 OpenSurge 配置文件所在目录解析。导入的
-`proxy-providers` 和 `rule-providers` 内部如果有相对 `path:`，会基于被导入的
-mihomo profile 所在目录解析。OpenSurge 会渲染 `profile.store-selected: true`，
-让 mihomo 可以跨重启保存策略组选择。
-
-启动网关服务前，可以先预览最终生成的 mihomo 配置：
-
-```sh
-go run ./cmd/omg doctor --config examples/config.imported-profile.example.yaml
-go run ./cmd/omg render-mihomo --config examples/config.example.yaml
-go run ./cmd/omg render-mihomo --config examples/config.imported-profile.example.yaml
-```
-
-当 `mihomo.binary` 指向已安装的 mihomo 二进制时，可以使用
-`validate-mihomo`。它会渲染最终配置，并运行 mihomo 自己的 `-t` 校验，但不会
-启动网关服务。
-
-```sh
-go run ./cmd/omg validate-mihomo --config examples/config.imported-profile.example.yaml
-```
-
-## CLI 使用方式
-
-下面的命令适合开发、自动化和诊断。普通安装包用户可以直接使用
-[App 使用指南](docs/app-user-guide.zh-CN.md)中的图形界面流程。
-
-### 状态与诊断
-
-```sh
-go run ./cmd/omg doctor --config examples/config.example.yaml
-go run ./cmd/omg status --config examples/config.example.yaml
-go run ./cmd/omg status --config examples/config.example.yaml --format json
-go run ./cmd/omg logs --config examples/config.example.yaml --tail 50 --format json
-go run ./cmd/omg snapshot --config examples/config.example.yaml --tail 50 --format json
-```
-
-### 策略、设备与 Provider
-
-```sh
-go run ./cmd/omg policies --config examples/config.imported-profile.example.yaml
-go run ./cmd/omg policy-select \
-  --config examples/config.imported-profile.example.yaml \
-  --group Proxy \
-  --policy DIRECT
-
-# Mac 本机规则 / 全局 / 直连（不会改变下游设备）：
-go run ./cmd/omg local-routing \
-  --config examples/config.imported-profile.example.yaml
-go run ./cmd/omg local-routing-set \
-  --config examples/config.imported-profile.example.yaml \
-  --mode global \
-  --policy Proxy
-
-# 配置 device_policy.file 后：
-go run ./cmd/omg devices --config ./config.yaml --format json
-go run ./cmd/omg device-policy-select \
-  --config ./config.yaml \
-  --device alice-phone \
-  --slot default \
-  --policy DIRECT
-
-go run ./cmd/omg connections \
-  --config examples/config.imported-profile.example.yaml \
-  --format json
-go run ./cmd/omg providers \
-  --config examples/config.imported-profile.example.yaml \
-  --format json
-go run ./cmd/omg provider-update \
-  --config examples/config.imported-profile.example.yaml \
-  --provider demo-provider \
-  --format json
-```
-
-### 配置渲染
-
-```sh
-go run ./cmd/omg render-mihomo --config examples/config.example.yaml
-go run ./cmd/omg validate-mihomo \
-  --config examples/config.imported-profile.example.yaml
-```
-
-### 网关生命周期
-
-以下操作会修改 DHCP、DNS、PF、IPv4 forwarding 或 mihomo 运行状态，需要 `sudo`：
-
-```sh
-sudo go run ./cmd/omg start --config examples/config.example.yaml --format json
-sudo go run ./cmd/omg reload --config examples/config.example.yaml --format json
-sudo go run ./cmd/omg restart-mihomo --config examples/config.example.yaml --format json
-sudo go run ./cmd/omg stop --config examples/config.example.yaml --format json
-```
-
-补充说明：
-
-- `policy-select` 会读取 live mihomo 策略组，并在发送切换请求前拒绝未知 group 或
-  policy；
-- `provider-update --provider <name>` 会请求 mihomo 刷新指定 proxy provider，并返回
-  刷新后的 provider 状态；
-- `logs --tail N --format json` 会返回最近的 dnsmasq 和 mihomo 日志行，并标出每个
-  日志文件的存在状态和读取错误；
-- `snapshot --format json` 会聚合 status、doctor、leases、日志、策略组、连接和
-  provider 状态；mihomo API 失败不会阻止其余 snapshot 返回；
-- `restart-mihomo` 只重启代理核心，不会停止 dnsmasq、卸载 PF、恢复 IPv4 forwarding
-  或修改本机网络设置；
-- `--format json` 会保留非零失败退出码，并在 stderr 输出结构化错误。成功的 `start`
-  和 `stop` 会返回包含 `command`、`ok` 和 `config_path` 的 payload。
-
-## AI Agent 友好工作区
-
-OpenSurge 把仓库本身也视为工程系统的一部分，而不只是存放代码的地方。目标是让
-产品意图、网络安全规则、运行时证据与积累下来的项目知识，都能被人类贡献者和
-Coding Agent 直接理解和使用。
-
-### Harness Engineering：设计 Agent 周围的工程环境
-
-这个工作区实践了
-[Harness Engineering](https://openai.com/index/harness-engineering/) 的核心思想：
-Agent 是否可靠，不只取决于模型，还取决于模型周围的上下文、约束、工具、可观测性
-与验收门槛。
-
-- `AGENTS.md` 是精简的入口地图：它定义产品身份、硬性网络不变量，并告诉 Agent
-  针对不同任务必须继续阅读哪些文档。
-- [`docs/agent-wiki/`](docs/agent-wiki/README.md) 以渐进披露的方式提供架构、决策与
-  验证上下文，避免每个任务都从全仓库重新拼装心智模型。
-- `status`、`doctor`、`logs`、`snapshot` 等机器可读 CLI，加上确定性的 `make`
-  入口与保留的 artifacts，让 Agent 能直接观察正在运行的系统。
-- 配置校验、只允许 TUN 的透明代理、rollback、隔离 Lab 与明确的恢复契约，把安全
-  指引变成可以执行和检查的边界。
-
-### Loop Engineering：用可执行证据闭环
-
-OpenSurge 实践
-[Loop Engineering](https://addyosmani.com/blog/loop-engineering/) 的核心：设计一套
-能够反复执行、观察、验证、恢复，并把结果带入下一轮的系统，而不是依赖一次写得很
-漂亮的 prompt。
-
-```text
-目标 + 约束
-    ↓
-AGENTS.md → Agent Wiki → 事实来源
-    ↓
-实现 → 快速测试 → Virtual LAN Lab
-    ↓
-ADB 辅助或人工真实设备验证
-    ↓
-日志 + artifacts + 清理/恢复证据
-    ↓
-可复用知识回写 sources/ 与 wiki/
-    ↺
-```
-
-这些验证层互相补充：
-
-- `make test` 与聚焦的 UI/控制面 gate 构成快速内循环。
-- 基于 Lima + socket_vmnet 的 Virtual LAN Lab，把需要权限的 DHCP、DNS、pf/NAT、
-  forwarding、TUN、策略、rollback 与清理行为放进可复现的隔离环境，不冒险干扰
-  普通 LAN。
-- 真实设备与 same-LAN/same-WiFi runner 负责闭合物理拓扑循环。ADB 可以收集
-  Android 路由、DNS 与连通性证据，Mac 侧同时关联 dnsmasq/mihomo 日志；当操作者
-  需要保留手机侧直接控制时，也支持人工检查点。
-- 对 DHCP 接管等高风险流程，恢复本身就是验收的一部分。流量探针成功，但路由器、
-  Mac 或客户端无法回到已知正常状态，仍不能算闭环完成。
-
-Virtual Lab 不能替代真实设备行为，一次真机 smoke 也不能替代确定性的 Lab gate。
-每个门槛究竟允许支持什么结论，见
-[验证契约](docs/agent-wiki/wiki/concepts/validation-gates.md)。
-
-### Agent Wiki：外置的项目记忆
-
-[Agent Wiki](docs/agent-wiki/wiki/index.md) 融入了 LLM Wiki 思想：把可复用的长期记忆
-从短暂的上下文窗口移到小型、版本化、带来源的知识层中。
-
-- `docs/agent-wiki/sources/` 保存稳定的项目简报、决策与验证契约。
-- `docs/agent-wiki/wiki/` 把来源材料整理成短小、互相链接的页面，让 Agent 按任务
-  渐进加载。
-- `.codex/hooks.json` 在本机安装 Session Wiki hook 后，把 session 延续与 compaction
-  接入项目本地记忆，同时不把私有 session 状态提交到仓库。
-
-这个知识层只收录可复用、已经验证的内容；一次性日志、临时输出、未经验证的猜测和
-普通 TODO 不进入 Agent Wiki。
-
-## 许可证
-
-OpenSurge for Mac 自有代码以及未另行声明的资产采用
-[GNU General Public License version 3 only](LICENSE)（`GPL-3.0-only`）。随包分发的
-第三方程序与库继续保留各自许可证；详见
-[第三方声明](THIRD_PARTY_NOTICES.md)，其中包含内置 mihomo、dnsmasq 准确版本的
-对应源码链接。
-
-## 安全
-
-`start` 和 `stop` 需要用 `sudo` 运行，因为它们会管理 DHCP、pf 和 IPv4
-forwarding。运行时文件会写入配置文件中的 `runtime.dir`。
-
-## 开发流程
-
-把 `make test` 作为快速默认门禁。CI 当前只运行这个单元测试门禁，所以普通
-push 和 pull request 不需要主机网络、免密 sudo、Lima 或 socket_vmnet。
-
-在提交或评审高风险网络改动前，请本地运行 `make lab-test`。这包括 DHCP、
-DNS、mihomo 启动/配置渲染、pf 规则、forwarding/rollback 行为、网关生命周期、
-lab 脚本，以及会影响运行时流量的示例配置。除非有专用 macOS runner 能提供同样
-受控的主机权限和网络隔离，否则虚拟 LAN lab 应保持为本地、夜间或手动门禁。
-
-使用 `make lab-test-tun` 验证支持的透明代理路径。该测试会让客户端不配置代理，
-并要求 mihomo 日志中出现通过 TUN inbound 观察到的直连 HTTPS 请求。修改
-mihomo profile 导入或 overlay 行为时，使用
-`make lab-test-tun-imported-profile`；它会用 imported profile fixture 跑同一个
-TUN 门禁。修改 imported provider 或会影响透明 TUN 流量的策略选择行为时，使用
-`make lab-test-tun-imported-egress`；它会使用本地 HTTP provider 和受控 HTTP
-CONNECT proxy，证明 `policy-select` 可以把 TUN 出口路径在 `DIRECT` 与受控代理
-之间切换。
-
-修改 Mac 本机规则 / 全局 / 直连、`open-surge/mac-*` 选择器或本机/下游隔离时，
-使用 `make lab-test-tun-local-routing`。它会分别证明本机 Global 可使用受控代理而
-下游仍按网关规则直连，以及本机 Direct 可绕过代理而下游仍使用网关代理。
-
-修改 MAC 租约、每设备 selector 或设备覆盖的数据路径时，使用
-`make lab-test-tun-device-policy`。它会证明两个客户端获得各自的固定租约、可独立
-选择不同的 TUN 出口，并验证设备级域名 `REJECT` 生效。域名/协议规则编译、模板和
-HTTP/MRS rule-provider 配置由单元测试覆盖；不需要为每条操作者规则运行 Lab。
-
-策略组控制面和机器可读 CLI 改动优先使用 `make policy-control-test`。它会启动真实
-mihomo 二进制，但不使用 sudo、dnsmasq、pf 或 TUN，并通过 live external-controller
-API 检查 `policies`、`policy-select`、mihomo 重启后的策略选择恢复、通过
-mixed-port 进行的本机/私网 `DIRECT` 保护、专用 local-routing 三模式控制，以及
-`connections`、`providers`、针对 file 与 HTTP proxy provider 的 `provider-update`
-和 `snapshot`；其中也会验证未知 policy 和内部组会被普通 `policy-select` 拒绝。
-
-使用 `make same-lan-start-tun` 和 `make same-lan-adb-check` 验证窄范围的同
-LAN 默认网关 smoke。这个 gate 会保持 DHCP disabled，要求 TUN，并通过 ADB 检查
-一台默认网关和 DNS 指向 Mac LAN IP 的 Android 测试设备。需要先验证单个域名的
-真实代理出口时，可以配合 `OMG_SAME_LAN_*` 上游代理环境变量使用
-`make same-lan-start-tun-proxy`，例如先测 `api.ipify.org`，再讨论完整订阅导入。
-更接近真实设备路径的 imported provider 策略切换 smoke 使用
-`make same-lan-start-tun-imported-egress` 和
-`make same-lan-adb-check-imported-egress`：它会导入 provider-backed `TunEgress`
-group，并把同 LAN TUN 流量从 `DIRECT` 切到受控本地 HTTP CONNECT proxy。这些 gate
-不宣称已经具备全 LAN 上线能力或真实远端订阅出口。
-如果明确不使用 ADB，也可以通过人工 Android 浏览器探针收集同一 imported egress
-证据；见[`tests/same-lan/README.zh-CN.md`](tests/same-lan/README.zh-CN.md#不使用-adb-的手动手机检查)。
-
-对于专门测试 Wi-Fi，路由器 DHCP 已由人工关闭后，可使用
-`make same-wifi-dhcp-start-imported-egress`，让 Android 以 DHCP 模式重新加入，再运行
-`make same-wifi-dhcp-adb-check-imported-egress`。这个独立高风险 runner 使用
-`gateway.mode: "same_wifi_dhcp"`，要求显式提供受保护的静态地址列表和路由器 DHCP
-已关闭的操作确认。其 stop gate 会验证 OpenSurge 清理，但路由器 DHCP 与客户端自动
-获取仍需人工恢复；详见
-[`tests/same-lan/WIFI-DHCP-RUNNER.zh-CN.md`](tests/same-lan/WIFI-DHCP-RUNNER.zh-CN.md)。
-
-## 虚拟 LAN lab
-
-集成 lab 会用两个轻量 Linux 客户端测试真实的 macOS 网关。Lima 提供客户端，
-socket_vmnet 创建一个没有竞争 DHCP 服务器的隔离二层主机网络。测试覆盖 DHCP、
-DNS、ICMP/NAT、直连 HTTPS，以及通过 mihomo `mixed-port` 的显式 HTTPS。
-
-```sh
-make lab-install
-make lab-up
-sudo -v
-make lab-test
-make lab-test-tun
-make lab-test-tun-imported-profile
-make lab-test-tun-imported-egress
-make lab-test-tun-device-policy
-make lab-down
-```
-
-一次性安装器会添加一个 root 拥有、功能固定的网络 helper，并添加一个很窄的
-sudoers 规则，只允许启动、停止和查看 lab 网络状态。网关二进制本身不会获得免密
-root 权限；端到端测试前请用 `sudo -v` 刷新 sudo ticket。拓扑、安全检查和排障
-步骤见 `tests/lab/README.zh-CN.md`。
+更多迁移说明见 [docs/linux-migration.md](docs/linux-migration.md)。

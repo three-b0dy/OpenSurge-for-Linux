@@ -39,6 +39,83 @@ func TestDefaultConfigPath(t *testing.T) {
 	}
 }
 
+func TestConfigMigratePrintsCandidateAndNotesWithoutWritingSource(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "mac-config.yaml")
+	source := []byte(`gateway:
+  interface: en0
+  upstream_interface: en1
+transparent:
+  tun_device: ""
+mihomo:
+  profile: "/tmp/profile.yaml"
+device_policy:
+  file: "/tmp/device-policy.json"
+pf:
+  anchor_name: opensurge
+local_system_proxy:
+  enabled: true
+`)
+	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := captureOutput(t, &stdout, &stderr, func() int {
+		return run([]string{"config", "migrate", "--config", sourcePath})
+	})
+	if code != 0 {
+		t.Fatalf("config migrate exit = %d, stderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "gateway:") || strings.Contains(stdout.String(), "pf:") || strings.Contains(stdout.String(), "local_system_proxy:") {
+		t.Fatalf("candidate YAML = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "gateway.interface") || !strings.Contains(stderr.String(), "gateway.upstream_interface") {
+		t.Fatalf("migration notes = %q", stderr.String())
+	}
+	unchanged, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(unchanged, source) {
+		t.Fatalf("source was modified: %q", unchanged)
+	}
+}
+
+func TestConfigMigrateReadErrorIsNonZero(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := captureOutput(t, &stdout, &stderr, func() int {
+		return run([]string{"config", "migrate", "--config", filepath.Join(t.TempDir(), "missing.yaml")})
+	})
+	if code == 0 {
+		t.Fatalf("config migrate missing source exit = 0, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestConfigMigrateRejectsPositionalArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := captureOutput(t, &stdout, &stderr, func() int {
+		return run([]string{"config", "migrate", "unexpected"})
+	})
+	if code == 0 {
+		t.Fatalf("config migrate positional argument exit = 0, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestUsageDoesNotExposeMacOSOnlyCommands(t *testing.T) {
+	usage := captureStderr(t, func() {
+		_ = run(nil)
+	})
+	for _, forbidden := range []string{"local-routing", "Mac", "PF", "system-proxy"} {
+		if strings.Contains(usage, forbidden) {
+			t.Fatalf("usage contains %q:\n%s", forbidden, usage)
+		}
+	}
+	if !strings.Contains(usage, "config migrate") {
+		t.Fatalf("usage does not document config migrate:\n%s", usage)
+	}
+}
+
 func TestConfigValidateCommand(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, nil, 0o644); err != nil {
@@ -809,132 +886,6 @@ func TestPoliciesCommandPrintsJSON(t *testing.T) {
 	}
 }
 
-func TestLocalRoutingCommandsUseDedicatedMihomoController(t *testing.T) {
-	oldFetch := fetchLocalRouting
-	oldSet := setLocalRouting
-	t.Cleanup(func() {
-		fetchLocalRouting = oldFetch
-		setLocalRouting = oldSet
-	})
-	fetchLocalRouting = func(_ context.Context, cfg config.Config) (mihomo.LocalRoutingSnapshot, error) {
-		if cfg.Mihomo.Secret != "test-secret" {
-			t.Fatalf("secret = %q", cfg.Mihomo.Secret)
-		}
-		return mihomo.LocalRoutingSnapshot{
-			Mode:               mihomo.LocalRoutingModeRule,
-			AvailableModes:     []string{mihomo.LocalRoutingModeRule, mihomo.LocalRoutingModeGlobal, mihomo.LocalRoutingModeDirect},
-			UDPBehavior:        "rules",
-			Transports:         []string{"tun", "loopback_explicit_proxy"},
-			NewConnectionsOnly: true,
-			Consistent:         true,
-		}, nil
-	}
-	var mode, policy string
-	setLocalRouting = func(_ context.Context, _ config.Config, requestedMode, requestedPolicy string) (mihomo.LocalRoutingSnapshot, error) {
-		mode, policy = requestedMode, requestedPolicy
-		return mihomo.LocalRoutingSnapshot{
-			Mode:               requestedMode,
-			AvailableModes:     []string{mihomo.LocalRoutingModeRule, mihomo.LocalRoutingModeGlobal, mihomo.LocalRoutingModeDirect},
-			GlobalGroup:        &mihomo.ProxyGroup{Name: mihomo.LocalRoutingGlobalGroup, Selected: requestedPolicy, Options: []string{"Proxy-A", "Proxy-B"}},
-			UDPBehavior:        "proxy",
-			Transports:         []string{"tun", "loopback_explicit_proxy"},
-			NewConnectionsOnly: true,
-			Consistent:         true,
-		}, nil
-	}
-
-	configPath := writeAPIConfig(t, "127.0.0.1:9090")
-	var exitCode int
-	output := captureStdout(t, func() {
-		exitCode = run([]string{"local-routing", "--config", configPath, "--format", "json"})
-	})
-	if exitCode != 0 {
-		t.Fatalf("local-routing exit=%d output=%s", exitCode, output)
-	}
-	var fetched mihomo.LocalRoutingSnapshot
-	if err := json.Unmarshal([]byte(output), &fetched); err != nil {
-		t.Fatal(err)
-	}
-	if fetched.Mode != mihomo.LocalRoutingModeRule || !fetched.Consistent {
-		t.Fatalf("local-routing = %#v", fetched)
-	}
-
-	output = captureStdout(t, func() {
-		exitCode = run([]string{"local-routing-set", "--config", configPath, "--mode", "global", "--policy", "Proxy-B", "--format", "json"})
-	})
-	if exitCode != 0 {
-		t.Fatalf("local-routing-set exit=%d output=%s", exitCode, output)
-	}
-	if mode != mihomo.LocalRoutingModeGlobal || policy != "Proxy-B" {
-		t.Fatalf("local-routing-set arguments = %q/%q", mode, policy)
-	}
-	var updated mihomo.LocalRoutingSnapshot
-	if err := json.Unmarshal([]byte(output), &updated); err != nil {
-		t.Fatal(err)
-	}
-	if updated.Mode != mihomo.LocalRoutingModeGlobal || updated.GlobalGroup == nil || updated.GlobalGroup.Selected != "Proxy-B" {
-		t.Fatalf("local-routing-set = %#v", updated)
-	}
-}
-
-func TestPolicySelectCommandRejectsLocalRoutingGroup(t *testing.T) {
-	oldFetch := fetchProxyGroups
-	oldSelect := selectProxyGroup
-	t.Cleanup(func() {
-		fetchProxyGroups = oldFetch
-		selectProxyGroup = oldSelect
-	})
-	fetchCalled := false
-	fetchProxyGroups = func(context.Context, config.Config) ([]mihomo.ProxyGroup, error) {
-		fetchCalled = true
-		return nil, nil
-	}
-	selectCalled := false
-	selectProxyGroup = func(context.Context, config.Config, string, string) error {
-		selectCalled = true
-		return nil
-	}
-
-	configPath := writeAPIConfig(t, "127.0.0.1:9090")
-	var exitCode int
-	stderr := captureStderr(t, func() {
-		exitCode = run([]string{"policy-select", "--config", configPath, "--group", mihomo.LocalRoutingTCPGroup, "--policy", "DIRECT"})
-	})
-	if exitCode == 0 || fetchCalled || selectCalled || !strings.Contains(stderr, "use local-routing-set") {
-		t.Fatalf("reserved selection exit=%d fetch=%t select=%t stderr=%s", exitCode, fetchCalled, selectCalled, stderr)
-	}
-}
-
-func TestPolicySelectCommandRejectsLocalRoutingOptionThroughGlobal(t *testing.T) {
-	oldFetch := fetchProxyGroups
-	oldSelect := selectProxyGroup
-	t.Cleanup(func() {
-		fetchProxyGroups = oldFetch
-		selectProxyGroup = oldSelect
-	})
-	fetchProxyGroups = func(context.Context, config.Config) ([]mihomo.ProxyGroup, error) {
-		return []mihomo.ProxyGroup{{
-			Name:     "GLOBAL",
-			Selected: "DIRECT",
-			Options:  []string{"DIRECT", mihomo.LocalRoutingGlobalGroup},
-		}}, nil
-	}
-	selectCalled := false
-	selectProxyGroup = func(context.Context, config.Config, string, string) error {
-		selectCalled = true
-		return nil
-	}
-
-	configPath := writeAPIConfig(t, "127.0.0.1:9090")
-	var exitCode int
-	stderr := captureStderr(t, func() {
-		exitCode = run([]string{"policy-select", "--config", configPath, "--group", "GLOBAL", "--policy", mihomo.LocalRoutingGlobalGroup})
-	})
-	if exitCode == 0 || selectCalled || !strings.Contains(stderr, "is not a member") {
-		t.Fatalf("indirect reserved selection exit=%d select=%t stderr=%s", exitCode, selectCalled, stderr)
-	}
-}
-
 func TestPolicySelectCommandCallsMihomoAPI(t *testing.T) {
 	oldFetch := fetchProxyGroups
 	oldSelect := selectProxyGroup
@@ -1299,25 +1250,6 @@ func TestProvidersCommandPrintsJSON(t *testing.T) {
 	}
 	if len(payload.RuleProviders) != 1 || payload.RuleProviders[0].Name != "cn" || payload.RuleProviders[0].RuleCount != 2 {
 		t.Fatalf("rule providers = %#v", payload.RuleProviders)
-	}
-}
-
-func TestProviderUpdateCommandRejectsLocalRoutingGroup(t *testing.T) {
-	oldUpdate := updateProxyProvider
-	t.Cleanup(func() { updateProxyProvider = oldUpdate })
-	updateCalled := false
-	updateProxyProvider = func(context.Context, config.Config, string) (mihomo.ProxyProvider, error) {
-		updateCalled = true
-		return mihomo.ProxyProvider{}, nil
-	}
-
-	configPath := writeAPIConfig(t, "127.0.0.1:9090")
-	var exitCode int
-	stderr := captureStderr(t, func() {
-		exitCode = run([]string{"provider-update", "--config", configPath, "--provider", mihomo.LocalRoutingGlobalGroup})
-	})
-	if exitCode == 0 || updateCalled || !strings.Contains(stderr, "internal") {
-		t.Fatalf("reserved provider update exit=%d called=%t stderr=%s", exitCode, updateCalled, stderr)
 	}
 }
 
@@ -1688,4 +1620,40 @@ func captureStderr(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return buf.String()
+}
+
+func captureOutput(t *testing.T, stdout, stderr *bytes.Buffer, fn func() int) int {
+	t.Helper()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutReader, stdoutWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = stdoutWriter, stderrWriter
+	code := fn()
+	os.Stdout, os.Stderr = oldStdout, oldStderr
+	if err := stdoutWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stderrWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(stdout, stdoutReader); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(stderr, stderrReader); err != nil {
+		t.Fatal(err)
+	}
+	if err := stdoutReader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stderrReader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return code
 }
