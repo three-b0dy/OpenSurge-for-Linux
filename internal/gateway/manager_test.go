@@ -435,7 +435,7 @@ func TestRestartMihomoValidatesBeforeStoppingLiveProcess(t *testing.T) {
 	if err := runtime.Ensure(paths); err != nil {
 		t.Fatal(err)
 	}
-	original := runtime.State{PIDDNSMasq: 11, PIDMihomo: 12, PFAnchorLoaded: true, StartedAt: time.Now()}
+	original := runtime.State{PIDDNSMasq: 11, PIDMihomo: 12, NftablesLoaded: true, StartedAt: time.Now()}
 	if err := runtime.SaveState(paths.StateFile, original); err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestRestartMihomoReplacesOnlyProxyEngineAndArchivesLog(t *testing.T) {
 	if err := runtime.Ensure(paths); err != nil {
 		t.Fatal(err)
 	}
-	original := runtime.State{PIDDNSMasq: 11, PIDMihomo: 12, PFAnchorLoaded: true, IPForwardingBefore: "0", StartedAt: time.Now()}
+	original := runtime.State{PIDDNSMasq: 11, PIDMihomo: 12, NftablesLoaded: true, IPForwardingBefore: "0", StartedAt: time.Now()}
 	if err := runtime.SaveState(paths.StateFile, original); err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestRestartMihomoReplacesOnlyProxyEngineAndArchivesLog(t *testing.T) {
 		t.Fatalf("mihomo calls stop=%v stoppedPID=%d start=%v", mihomoManager.stopCalled, mihomoManager.stoppedPID, mihomoManager.startCalled)
 	}
 	state, exists, err := runtime.LoadState(paths.StateFile)
-	if err != nil || !exists || state.PIDMihomo != 22 || state.PIDDNSMasq != original.PIDDNSMasq || !state.PFAnchorLoaded || state.IPForwardingBefore != original.IPForwardingBefore {
+	if err != nil || !exists || state.PIDMihomo != 22 || state.PIDDNSMasq != original.PIDDNSMasq || !state.NftablesLoaded || state.IPForwardingBefore != original.IPForwardingBefore {
 		t.Fatalf("runtime state=%#v exists=%v err=%v", state, exists, err)
 	}
 	archive := filepath.Join(paths.LogDir, "mihomo-before-restart-20260716T125333.123456789Z.log")

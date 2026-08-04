@@ -200,7 +200,6 @@ func (m Manager) Start(ctx context.Context) error {
 	state := runtime.State{
 		StartedAt:          deps.now(),
 		IPForwardingBefore: ipForwardingBefore,
-		PFEnabledBefore:    pfEnabledBefore,
 		ProfileDigest:      profileDigest,
 	}
 	if bundle := m.cfg.DevicePolicy.Bundle; bundle != nil {
@@ -236,7 +235,7 @@ func (m Manager) Start(ctx context.Context) error {
 	if err := pfManager.Load(!pfEnabledBefore); err != nil {
 		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager, systemProxyManager, false)
 	}
-	state.PFAnchorLoaded = true
+	state.NftablesLoaded = true
 	loaded, err := pfManager.Loaded()
 	if err != nil {
 		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager, systemProxyManager, false)
@@ -457,8 +456,8 @@ func (m Manager) Stop(ctx context.Context) error {
 		cleanupErr = errors.Join(cleanupErr, dhcpManager.Stop(state.PIDDNSMasq))
 		mihomoManager := deps.newMihomo(m.cfg, m.paths)
 		cleanupErr = errors.Join(cleanupErr, mihomoManager.Stop(state.PIDMihomo))
-		if state.PFAnchorLoaded {
-			cleanupErr = errors.Join(cleanupErr, pfManager.Unload(!state.PFEnabledBefore))
+		if state.NftablesLoaded {
+			cleanupErr = errors.Join(cleanupErr, pfManager.Unload(false))
 		}
 		cleanupErr = errors.Join(cleanupErr, sysctlManager.Restore(state.IPForwardingBefore))
 	}
@@ -578,8 +577,8 @@ func (m Manager) rollback(ctx context.Context, cause error, state runtime.State,
 	}
 	cleanupErr = errors.Join(cleanupErr, dhcpManager.Stop(state.PIDDNSMasq))
 	cleanupErr = errors.Join(cleanupErr, mihomoManager.Stop(state.PIDMihomo))
-	if state.PFAnchorLoaded {
-		cleanupErr = errors.Join(cleanupErr, pfManager.Unload(!state.PFEnabledBefore))
+	if state.NftablesLoaded {
+		cleanupErr = errors.Join(cleanupErr, pfManager.Unload(false))
 	}
 	cleanupErr = errors.Join(cleanupErr, sysctlManager.Restore(state.IPForwardingBefore))
 	if cleanupErr != nil {

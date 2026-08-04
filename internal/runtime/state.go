@@ -12,8 +12,7 @@ type State struct {
 	PIDDNSMasq         int                  `json:"pid_dnsmasq,omitempty"`
 	PIDMihomo          int                  `json:"pid_mihomo,omitempty"`
 	IPForwardingBefore string               `json:"ip_forwarding_before,omitempty"`
-	PFEnabledBefore    bool                 `json:"pf_enabled_before"`
-	PFAnchorLoaded     bool                 `json:"pf_anchor_loaded"`
+	NftablesLoaded     bool                 `json:"nftables_loaded"`
 	DevicePolicyDigest string               `json:"device_policy_digest,omitempty"`
 	ProfileDigest      string               `json:"profile_digest,omitempty"`
 	LocalSystemProxy   *SystemProxySnapshot `json:"local_system_proxy,omitempty"`

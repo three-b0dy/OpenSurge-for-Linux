@@ -89,7 +89,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 		} else {
 			gatewayStatus = "degraded"
 		}
-		if state.PFAnchorLoaded {
+		if state.NftablesLoaded {
 			pfStatus = "loaded"
 			if loaded, err := pf.New(m.cfg, m.paths).Loaded(); err == nil && !loaded {
 				pfStatus = "unloaded"

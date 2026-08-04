@@ -8,7 +8,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 )
 
-const keyIPForwarding = "net.inet.ip.forwarding"
+const keyIPForwarding = "net.ipv4.ip_forward"
 
 type Manager struct{}
 

@@ -15,3 +15,9 @@ func TestFormatForwarding(t *testing.T) {
 		}
 	}
 }
+
+func TestIPForwardingUsesLinuxKey(t *testing.T) {
+	if keyIPForwarding != "net.ipv4.ip_forward" {
+		t.Fatalf("keyIPForwarding = %q, want net.ipv4.ip_forward", keyIPForwarding)
+	}
+}

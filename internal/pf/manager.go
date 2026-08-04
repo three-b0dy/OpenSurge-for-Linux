@@ -34,7 +34,7 @@ func (m Manager) WriteAnchor() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.paths.PFAnchor, []byte(rendered), 0o640)
+	return os.WriteFile(m.paths.NftablesRules, []byte(rendered), 0o640)
 }
 
 func (m Manager) Enabled() (bool, error) {
@@ -46,7 +46,7 @@ func (m Manager) Enabled() (bool, error) {
 }
 
 func (m Manager) Load(enablePF bool) error {
-	if err := runPF("pfctl", "-a", DefaultAnchorName, "-f", m.paths.PFAnchor); err != nil {
+	if err := runPF("pfctl", "-a", DefaultAnchorName, "-f", m.paths.NftablesRules); err != nil {
 		return err
 	}
 	if enablePF {

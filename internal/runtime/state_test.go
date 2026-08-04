@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,8 +14,7 @@ func TestSaveAndLoadState(t *testing.T) {
 		PIDDNSMasq:         101,
 		PIDMihomo:          202,
 		IPForwardingBefore: "0",
-		PFEnabledBefore:    true,
-		PFAnchorLoaded:     true,
+		NftablesLoaded:     true,
 		StartedAt:          time.Unix(1_700_000_000, 0).UTC(),
 	}
 
@@ -35,7 +36,7 @@ func TestSaveAndLoadState(t *testing.T) {
 func TestSaveStateReplacesExistingState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	first := State{PIDDNSMasq: 101, IPForwardingBefore: "0"}
-	second := State{PIDMihomo: 202, IPForwardingBefore: "1", PFAnchorLoaded: true}
+	second := State{PIDMihomo: 202, IPForwardingBefore: "1", NftablesLoaded: true}
 
 	if err := SaveState(path, first); err != nil {
 		t.Fatalf("SaveState(first) error = %v", err)
@@ -52,6 +53,19 @@ func TestSaveStateReplacesExistingState(t *testing.T) {
 	}
 	if got != second {
 		t.Fatalf("LoadState() = %+v, want %+v", got, second)
+	}
+}
+
+func TestStateDoesNotSerializePFOrSystemProxy(t *testing.T) {
+	data, err := json.Marshal(State{NftablesLoaded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"nftables_loaded":true`)) {
+		t.Fatalf("state JSON = %s, missing nftables_loaded", data)
+	}
+	if bytes.Contains(data, []byte("pf_")) || bytes.Contains(data, []byte("system_proxy")) {
+		t.Fatalf("state JSON retained removed platform fields: %s", data)
 	}
 }
 
