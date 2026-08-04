@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if test "${1:-}" = purge; then
+	rm -rf /var/lib/opensurge
+	rm -f /etc/opensurge/tls/cert.pem /etc/opensurge/tls/key.pem
+	rmdir /etc/opensurge/tls 2>/dev/null || true
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl daemon-reload || true
+fi
+
+exit 0

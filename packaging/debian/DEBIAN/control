@@ -1,0 +1,11 @@
+Package: opensurge
+Version: __VERSION__
+Section: net
+Priority: optional
+Architecture: __ARCH__
+Maintainer: OpenSurge maintainers <opensurge@example.invalid>
+Depends: dnsmasq, nftables, iproute2, ca-certificates, systemd
+Description: OpenSurge Linux gateway and LAN control plane
+ OpenSurge provides a Linux gateway data plane and a LAN HTTPS control plane.
+ The package installs binaries and service boundaries but never starts the
+ gateway during installation.

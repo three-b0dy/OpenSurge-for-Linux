@@ -4,10 +4,13 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  unit:
-    name: Unit tests
-    runs-on: ubuntu-latest
+  linux:
+    name: Linux checks
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -18,5 +21,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run unit tests
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Run Linux repository checks
+        run: make linux-ci-check
+
+      - name: Run Go tests
         run: make test
+
+      - name: Run Web tests
+        run: make web-test

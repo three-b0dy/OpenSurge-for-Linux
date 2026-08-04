@@ -1,0 +1,113 @@
+name: Linux Debian release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build ${{ matrix.arch }} package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Set up cross-architecture containers
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Derive release version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Run repository checks
+        run: make linux-ci-check
+
+      - name: Stage pinned mihomo
+        run: make linux-release-deps ARCH=${{ matrix.arch }}
+
+      - name: Build Debian package
+        run: make deb ARCH=${{ matrix.arch }} VERSION=${{ steps.version.outputs.version }}
+
+      - name: Test package in matching architecture container
+        env:
+          PACKAGE: artifacts/release/opensurge_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb
+        run: |
+          docker run --rm --platform '${{ matrix.platform }}' \
+            -e PACKAGE="$PACKAGE" \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace ubuntu:24.04 \
+            bash -euc '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y ca-certificates dnsmasq iproute2 nftables systemd
+              OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 tests/packages/install-deb.sh "$PACKAGE"
+            '
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensurge-${{ matrix.arch }}
+          path: artifacts/release/opensurge_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: opensurge-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release-assets
+        run: sha256sum opensurge_*.deb > SHA256SUMS
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "OpenSurge $GITHUB_REF_NAME" \
+            --generate-notes \
+            release-assets/opensurge_*.deb release-assets/SHA256SUMS

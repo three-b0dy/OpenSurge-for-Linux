@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+if ! getent group opensurge >/dev/null 2>&1; then
+	addgroup --system opensurge
+fi
+if ! getent passwd opensurge >/dev/null 2>&1; then
+	adduser --system --home /var/lib/opensurge --no-create-home \
+		--ingroup opensurge --disabled-login --disabled-password \
+		--shell /usr/sbin/nologin opensurge
+fi
+
+install -d -o root -g opensurge -m 0750 /etc/opensurge /etc/opensurge/tls
+install -d -o opensurge -g opensurge -m 0750 /var/lib/opensurge /var/lib/opensurge/runtime
+if test -f /etc/opensurge/config.yaml; then
+	chmod 0640 /etc/opensurge/config.yaml
+	chown root:opensurge /etc/opensurge/config.yaml
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl daemon-reload || true
+	if test -f /var/lib/opensurge/admin.json; then
+		systemctl enable opensurge-control.service || true
+	fi
+fi
+
+exit 0

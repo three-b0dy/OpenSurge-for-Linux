@@ -35,13 +35,15 @@ grep -Fx 'ReadWritePaths=/var/lib/opensurge /run/opensurge' "$security_conf"
 grep -Fx 'CapabilityBoundingSet=' "$security_conf"
 grep -Fx 'AmbientCapabilities=' "$security_conf"
 
-if command -v systemd-analyze >/dev/null 2>&1; then
-  systemd-analyze verify \
-    "$unit_dir/opensurge-gateway.service" \
-    "$unit_dir/opensurge-gateway.socket" \
-    "$unit_dir/opensurge-control.service"
+if command -v systemd-analyze >/dev/null 2>&1 && \
+  test -x /usr/lib/opensurge/opensurge-gateway && \
+  test -x /usr/lib/opensurge/opensurge-control; then
+	systemd-analyze verify \
+	  "$unit_dir/opensurge-gateway.service" \
+	  "$unit_dir/opensurge-gateway.socket" \
+	  "$unit_dir/opensurge-control.service"
 else
-  echo "SKIP: systemd-analyze is unavailable; static unit assertions passed"
+	echo "SKIP: systemd-analyze or installed OpenSurge binaries unavailable; static unit assertions passed"
 fi
 
 echo "systemd unit assertions passed"

@@ -1,6 +1,6 @@
 .PHONY: test build doctor status policy-control-test
 .PHONY: web-install web-build web-test control-build control-run
-.PHONY: linux-lab-test linux-lab-test-tun linux-real-device-smoke systemd-unit-test
+.PHONY: linux-lab-test linux-lab-test-tun linux-real-device-smoke systemd-unit-test linux-release-deps deb linux-ci-check
 
 test:
 	go test ./...
@@ -48,3 +48,17 @@ linux-real-device-smoke:
 
 systemd-unit-test:
 	bash tests/systemd/units_test.sh
+
+linux-release-deps:
+	@test -n "$(ARCH)" || (echo "ARCH must be amd64 or arm64" >&2; exit 2)
+	bash scripts/prepare-linux-release-deps.sh "$(ARCH)"
+
+deb:
+	@test -n "$(ARCH)" || (echo "ARCH must be amd64 or arm64" >&2; exit 2)
+	@test -n "$(VERSION)" || (echo "VERSION is required" >&2; exit 2)
+	bash packaging/debian/build-deb.sh "$(ARCH)" "$(VERSION)"
+
+linux-ci-check:
+	bash scripts/check-linux-repository.sh
+	bash tests/systemd/units_test.sh
+	bash -n scripts/*.sh packaging/debian/build-deb.sh packaging/debian/DEBIAN/* tests/scripts/*.sh tests/packages/*.sh
