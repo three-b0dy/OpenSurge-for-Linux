@@ -9,18 +9,18 @@ import (
 )
 
 type State struct {
-	PIDDNSMasq         int                  `json:"pid_dnsmasq,omitempty"`
-	PIDMihomo          int                  `json:"pid_mihomo,omitempty"`
-	IPForwardingBefore string               `json:"ip_forwarding_before,omitempty"`
-	NftablesLoaded     bool                 `json:"nftables_loaded"`
-	DevicePolicyDigest string               `json:"device_policy_digest,omitempty"`
-	ProfileDigest      string               `json:"profile_digest,omitempty"`
-	LocalSystemProxy   *SystemProxySnapshot `json:"local_system_proxy,omitempty"`
-	StartedAt          time.Time            `json:"started_at"`
+	PIDDNSMasq            int       `json:"pid_dnsmasq,omitempty"`
+	PIDMihomo             int       `json:"pid_mihomo,omitempty"`
+	IPForwardingBefore    string    `json:"ip_forwarding_before,omitempty"`
+	NftablesLoaded        bool      `json:"nftables_loaded"`
+	FirewallEnabledBefore bool      `json:"firewall_enabled_before"`
+	DevicePolicyDigest    string    `json:"device_policy_digest,omitempty"`
+	ProfileDigest         string    `json:"profile_digest,omitempty"`
+	StartedAt             time.Time `json:"started_at"`
 }
 
-// SystemProxySnapshot is the macOS network-service proxy state captured before
-// OpenSurge enables its local HTTP/HTTPS compatibility layer.
+// SystemProxySnapshot and SystemProxySetting remain as legacy type definitions
+// for the retained macOS package. Linux runtime State no longer stores them.
 type SystemProxySnapshot struct {
 	NetworkService       string             `json:"network_service"`
 	Interface            string             `json:"interface"`
