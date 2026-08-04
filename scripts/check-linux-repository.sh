@@ -38,15 +38,37 @@ grep -F 'SHA256SUMS' "$release" >/dev/null
 test ! -e "$repo_root/.github/workflows/release-unsigned.yml"
 
 control="$repo_root/packaging/debian/DEBIAN/control"
+preinst="$repo_root/packaging/debian/DEBIAN/preinst"
 postinst="$repo_root/packaging/debian/DEBIAN/postinst"
 prerm="$repo_root/packaging/debian/DEBIAN/prerm"
 postrm="$repo_root/packaging/debian/DEBIAN/postrm"
+build_deb="$repo_root/packaging/debian/build-deb.sh"
+package_test="$repo_root/tests/packages/install-deb.sh"
 grep -F 'Architecture: __ARCH__' "$control" >/dev/null
-if grep -Eq 'systemctl (start|enable --now)' "$postinst"; then
-	echo "postinst must not start or immediately enable a service" >&2
+if grep -E '^Depends:.*(^|[,[:space:]])(dnsmasq|nftables|iproute2|ca-certificates|systemd)([[:space:],]|$)' "$control"; then
+	echo "OpenSurge package must not declare installer-owned networking runtime dependencies" >&2
+	exit 1
+fi
+test -x "$preinst"
+grep -F 'OPENSURGE_INSTALLER_MARKER' "$preinst" >/dev/null
+grep -F '/run/opensurge/installer' "$preinst" >/dev/null
+grep -F 'stat -c' "$preinst" >/dev/null
+grep -F 'opensurge-install' "$preinst" >/dev/null
+if grep -Eq '(^|[[:space:]])(rm|mv|cp|mkdir|install|systemctl|service)([[:space:]]|$)' "$preinst"; then
+	echo "preinst guard must remain side-effect-free" >&2
+	exit 1
+fi
+grep -F 'for script in preinst postinst prerm postrm' "$build_deb" >/dev/null
+grep -F 'OPENSURGE_PACKAGE_TEST_ALLOW_HOST' "$package_test" >/dev/null
+if grep -Eq 'systemctl (start|enable)([[:space:]]|$)' "$postinst"; then
+	echo "postinst must not start or enable a service" >&2
 	exit 1
 fi
 grep -F 'systemctl stop' "$prerm" >/dev/null
+grep -F 'remove|purge)' "$postrm" >/dev/null
+grep -F 'load_install_manifest' "$postrm" >/dev/null
+grep -F 'resolver_was_altered' "$postrm" >/dev/null
+grep -F 'dnsmasq_was_altered' "$postrm" >/dev/null
 grep -F 'rm -rf /var/lib/opensurge' "$postrm" >/dev/null
 
 echo "Linux repository checks passed"

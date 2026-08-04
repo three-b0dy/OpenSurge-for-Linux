@@ -77,7 +77,7 @@ chmod 0640 "$pkg_root/etc/opensurge/config.yaml"
 install -d -m 0755 "$pkg_root/DEBIAN"
 sed -e "s/__VERSION__/$version/g" -e "s/__ARCH__/$arch/g" \
 	"$repo_root/packaging/debian/DEBIAN/control" >"$pkg_root/DEBIAN/control"
-for script in postinst prerm postrm; do
+for script in preinst postinst prerm postrm; do
 	install -m 0755 "$repo_root/packaging/debian/DEBIAN/$script" "$pkg_root/DEBIAN/$script"
 done
 install -m 0644 "$repo_root/packaging/debian/DEBIAN/conffiles" "$pkg_root/DEBIAN/conffiles"

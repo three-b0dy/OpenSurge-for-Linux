@@ -20,6 +20,7 @@ fixture_server_log="$test_root/release-server.log"
 fixture_server_pid=''
 release_base_url=''
 config_path="$test_root/root/etc/opensurge/config.yaml"
+observed_installer_marker="$test_root/observed-installer-marker"
 
 cleanup() {
 	if test -n "$fixture_server_pid"; then
@@ -170,6 +171,22 @@ if test "$#" -eq 1 && test "$1" = --print-architecture; then
 	printf '%s\n' "${OPENSURGE_INSTALLER_TEST_DPKG_ARCH:-amd64}"
 fi
 if test "$#" -eq 2 && test "$1" = -i; then
+	marker=${OPENSURGE_INSTALLER_MARKER:-}
+	test -n "$marker" || exit 45
+	case "$marker" in
+		"$OPENSURGE_INSTALLER_ROOT/run/opensurge/installer/"transaction-*.marker) ;;
+		*) exit 46 ;;
+	esac
+	test -f "$marker" && ! test -L "$marker" || exit 47
+	marker_mode=$(stat -f '%Lp' "$marker" 2>/dev/null || stat -c '%a' "$marker")
+	test "$marker_mode" = 600 || exit 48
+	marker_name=${marker##*/}
+	transaction_id=${marker_name#transaction-}
+	transaction_id=${transaction_id%.marker}
+	test "$(sed -n '1p' "$marker")" = opensurge-installer-marker-v1 || exit 49
+	test "$(sed -n '2p' "$marker")" = "transaction_id=$transaction_id" || exit 50
+	test "$(wc -l <"$marker" | tr -d '[:space:]')" = 2 || exit 51
+	printf '%s\n' "$marker" >"$OPENSURGE_INSTALLER_TEST_MARKER_OBSERVED_PATH"
 	if test "${OPENSURGE_INSTALLER_TEST_EXPECT_FRESH_CONFIG:-0}" = 1; then
 		test ! -e "$OPENSURGE_INSTALLER_TEST_CONFIG_PATH" || exit 1
 	fi
@@ -250,6 +267,7 @@ EOF
 make_fake_systemctl() {
 	cat >"$fake_bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
+test -z "${OPENSURGE_INSTALLER_MARKER:-}" || exit 98
 printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
 printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
 printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
@@ -439,6 +457,7 @@ run_installer() {
 		OPENSURGE_INSTALLER_TEST_IP_SCENARIO="${OPENSURGE_INSTALLER_TEST_IP_SCENARIO:-ens18}" \
 		OPENSURGE_INSTALLER_TEST_CONFIG_PATH="$config_path" \
 		OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH="$test_root/package-phase-complete" \
+		OPENSURGE_INSTALLER_TEST_MARKER_OBSERVED_PATH="$observed_installer_marker" \
 		OPENSURGE_INSTALLER_TEST_EXPECT_FRESH_CONFIG="$expect_fresh_config" \
 		OPENSURGE_TEST_SECRET="$test_secret" \
 		PATH="$fake_bin:$PATH" \
@@ -447,7 +466,7 @@ run_installer() {
 
 reset_install_root() {
 	rm -rf -- "$test_root/root"
-	rm -f -- "$test_root/package-phase-complete"
+	rm -f -- "$test_root/package-phase-complete" "$observed_installer_marker"
 	mkdir -p "$test_root/root/etc"
 	printf '%s\n' "${OPENSURGE_INSTALLER_TEST_RESOLVER:-nameserver 192.0.2.53}" >"$test_root/root/etc/resolv.conf"
 }
@@ -476,11 +495,13 @@ expect_success() {
 	: >"$captured_stderr"
 	: >"$captured_commands"
 	run_installer "$@" || fail "installer rejected valid invocation: $*"
-	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends ca-certificates curl dnsmasq nftables iproute2 systemd'
+	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_contains "$captured_commands" 'dpkg -i'
 	assert_not_contains "$captured_stdout" "$test_secret"
 	assert_not_contains "$captured_stderr" "$test_secret"
 	assert_not_contains "$installer_log" "$test_secret"
+	test -s "$observed_installer_marker" || fail 'dpkg did not receive an installer marker'
+	assert_file_missing "$(<"$observed_installer_marker")"
 }
 
 expect_topology_failure() {
@@ -673,7 +694,7 @@ expect_temporary_policy_is_removed_after_dependency_failure() {
 	if OPENSURGE_TEST_APT_FAIL=install run_installer --version v1.2.3; then
 		fail 'installer accepted a failed host dependency installation'
 	fi
-	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends ca-certificates curl dnsmasq nftables iproute2 systemd'
+	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_file_missing "$fake_bin/policy-rc.d"
 	assert_not_contains "$captured_commands" 'dpkg -i'
 }
@@ -705,6 +726,8 @@ expect_failure_rolls_back_owned_dns_state() {
 	assert_contains "$captured_commands" 'systemctl start dnsmasq.service'
 	assert_file_missing "$state_root/manifest"
 	assert_file_missing "$state_root/resolv.conf.before"
+	test -s "$observed_installer_marker" || fail 'failing dpkg did not receive an installer marker'
+	assert_file_missing "$(<"$observed_installer_marker")"
 }
 
 expect_failed_resolved_disable_restores_recorded_state() {

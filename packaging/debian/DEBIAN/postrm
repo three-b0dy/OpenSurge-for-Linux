@@ -1,14 +1,253 @@
 #!/bin/sh
 set -eu
 
-if test "${1:-}" = purge; then
-	rm -rf /var/lib/opensurge
-	rm -f /etc/opensurge/tls/cert.pem /etc/opensurge/tls/key.pem
-	rmdir /etc/opensurge/tls 2>/dev/null || true
-fi
+state_directory=/var/lib/opensurge/install-state
+manifest_path=$state_directory/manifest
+resolver_backup_path=$state_directory/resolv.conf.before
 
-if command -v systemctl >/dev/null 2>&1; then
-	systemctl daemon-reload || true
-fi
+manifest_seen=''
+manifest_state_version=''
+manifest_installer_version=''
+manifest_transaction_id=''
+manifest_install_phase=''
+manifest_resolver_was_altered=''
+manifest_resolved_was_altered=''
+manifest_resolved_was_enabled=''
+manifest_resolved_was_active=''
+manifest_dnsmasq_was_altered=''
+manifest_dnsmasq_was_enabled=''
+manifest_dnsmasq_was_active=''
+manifest_resolv_conf_backup_exists=''
+manifest_resolv_conf_kind=''
+manifest_selected_resolver=''
+manifest_resolver_selection=''
+
+is_boolean() {
+	case "$1" in
+		0|1) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+is_unicast_ipv4() {
+	address=$1
+	old_ifs=$IFS
+	IFS=.
+	set -- $address
+	IFS=$old_ifs
+	test "$#" -eq 4 || return 1
+	first=$1
+	for octet in "$@"; do
+		case "$octet" in
+			''|*[!0123456789]*) return 1 ;;
+		esac
+		test "$octet" -le 255 2>/dev/null || return 1
+	done
+	test "$first" -gt 0 && test "$first" -lt 224 && test "$first" -ne 127 || return 1
+	test "$address" != 255.255.255.255
+}
+
+ipv6_group_count() {
+	value=$1
+	if test -z "$value"; then
+		printf '0'
+		return 0
+	fi
+	old_ifs=$IFS
+	IFS=:
+	set -- $value
+	IFS=$old_ifs
+	count=0
+	for group in "$@"; do
+		case "$group" in
+			''|*[!0123456789abcdefABCDEF]*) return 1 ;;
+		esac
+		test "${#group}" -le 4 || return 1
+		count=$((count + 1))
+	done
+	printf '%s' "$count"
+}
+
+is_nonlocal_ipv6() {
+	address=$1
+	case "$address" in
+		*[!0123456789abcdefABCDEF:]*|*::*::*|::|::1|[Ff][Ff]*|[Ff][Ee][89AaBb][0123456789abcdefABCDEF]:*) return 1 ;;
+		*:* ) ;;
+		*) return 1 ;;
+	esac
+	case "$address" in
+		*::* )
+			left=${address%%::*}
+			right=${address#*::}
+			left_count=$(ipv6_group_count "$left") || return 1
+			right_count=$(ipv6_group_count "$right") || return 1
+			test $((left_count + right_count)) -lt 8
+			;;
+		*)
+			test "${address#:}" = "$address" && test "${address%:}" = "$address" || return 1
+			test "$(ipv6_group_count "$address")" -eq 8
+			;;
+	esac
+}
+
+is_nonlocal_nameserver() {
+	is_unicast_ipv4 "$1" || is_nonlocal_ipv6 "$1"
+}
+
+record_manifest_field() {
+	key=$1
+	value=$2
+	case " $manifest_seen " in
+		*" $key "*) return 1 ;;
+	esac
+	manifest_seen="$manifest_seen $key"
+	case "$key" in
+		state_version) manifest_state_version=$value ;;
+		installer_version) manifest_installer_version=$value ;;
+		transaction_id) manifest_transaction_id=$value ;;
+		install_phase) manifest_install_phase=$value ;;
+		resolver_was_altered) manifest_resolver_was_altered=$value ;;
+		resolved_was_altered) manifest_resolved_was_altered=$value ;;
+		resolved_was_enabled) manifest_resolved_was_enabled=$value ;;
+		resolved_was_active) manifest_resolved_was_active=$value ;;
+		dnsmasq_was_altered) manifest_dnsmasq_was_altered=$value ;;
+		dnsmasq_was_enabled) manifest_dnsmasq_was_enabled=$value ;;
+		dnsmasq_was_active) manifest_dnsmasq_was_active=$value ;;
+		resolv_conf_backup_exists) manifest_resolv_conf_backup_exists=$value ;;
+		resolv_conf_kind) manifest_resolv_conf_kind=$value ;;
+		selected_resolver) manifest_selected_resolver=$value ;;
+		resolver_selection) manifest_resolver_selection=$value ;;
+		*) return 1 ;;
+	esac
+}
+
+load_install_manifest() {
+	test -d "$state_directory" && ! test -L "$state_directory" || return 1
+	test "$(stat -c '%u:%a' "$state_directory" 2>/dev/null || true)" = 0:700 || return 1
+	test -f "$manifest_path" && ! test -L "$manifest_path" || return 1
+	test "$(stat -c '%u:%a' "$manifest_path" 2>/dev/null || true)" = 0:600 || return 1
+	manifest_seen=''
+	while IFS= read -r line || test -n "$line"; do
+		case "$line" in
+			*=*) ;;
+			*) return 1 ;;
+		esac
+		key=${line%%=*}
+		value=${line#*=}
+		record_manifest_field "$key" "$value" || return 1
+	done <"$manifest_path"
+	for required_key in state_version installer_version transaction_id install_phase \
+		resolver_was_altered resolved_was_altered resolved_was_enabled resolved_was_active \
+		dnsmasq_was_altered dnsmasq_was_enabled dnsmasq_was_active \
+		resolv_conf_backup_exists resolv_conf_kind selected_resolver resolver_selection; do
+		case " $manifest_seen " in
+			*" $required_key "*) ;;
+			*) return 1 ;;
+		esac
+	done
+	test "$manifest_state_version" = 1 && test "$manifest_installer_version" = 1 || return 1
+	test -n "$manifest_transaction_id" || return 1
+	case "$manifest_transaction_id" in
+		*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]*) return 1 ;;
+	esac
+	case "$manifest_install_phase" in
+		dependencies_installed|host_owned|package_installed|complete) ;;
+		*) return 1 ;;
+	esac
+	is_boolean "$manifest_resolver_was_altered" && \
+		is_boolean "$manifest_resolved_was_altered" && \
+		is_boolean "$manifest_resolved_was_enabled" && \
+		is_boolean "$manifest_resolved_was_active" && \
+		is_boolean "$manifest_dnsmasq_was_altered" && \
+		is_boolean "$manifest_dnsmasq_was_enabled" && \
+		is_boolean "$manifest_dnsmasq_was_active" && \
+		is_boolean "$manifest_resolv_conf_backup_exists" || return 1
+	case "$manifest_resolv_conf_kind:$manifest_resolv_conf_backup_exists" in
+		absent:0)
+			test ! -e "$resolver_backup_path" && ! test -L "$resolver_backup_path" || return 1
+			;;
+		regular:1) test -f "$resolver_backup_path" && ! test -L "$resolver_backup_path" || return 1 ;;
+		symlink:1) test -L "$resolver_backup_path" || return 1 ;;
+		*) return 1 ;;
+	esac
+	case "$manifest_selected_resolver:$manifest_resolver_selection" in
+		none:none) ;;
+		*:nameserver) is_nonlocal_nameserver "$manifest_selected_resolver" || return 1 ;;
+		*:gateway) is_unicast_ipv4 "$manifest_selected_resolver" || return 1 ;;
+		*) return 1 ;;
+	esac
+}
+
+restore_resolver() {
+	case "$manifest_resolv_conf_kind" in
+		absent)
+			rm -f /etc/resolv.conf
+			;;
+		regular)
+			test -f "$resolver_backup_path" && ! test -L "$resolver_backup_path" || return 1
+			rm -f /etc/resolv.conf
+			cp -pP "$resolver_backup_path" /etc/resolv.conf
+			;;
+		symlink)
+			test -L "$resolver_backup_path" || return 1
+			rm -f /etc/resolv.conf
+			cp -pP "$resolver_backup_path" /etc/resolv.conf
+			;;
+		*) return 1 ;;
+	esac
+}
+
+restore_service() {
+	service=$1
+	was_enabled=$2
+	was_active=$3
+	if test "$was_enabled" -eq 1; then
+		systemctl enable "$service" || return 1
+	else
+		systemctl disable "$service" || return 1
+	fi
+	if test "$was_active" -eq 1; then
+		systemctl start "$service" || return 1
+	else
+		systemctl stop "$service" || return 1
+	fi
+}
+
+restore_host_state() {
+	if test ! -e "$manifest_path" && ! test -L "$manifest_path"; then
+		return 0
+	fi
+	if ! load_install_manifest; then
+		printf '%s\n' 'opensurge: invalid install-state manifest; retained for manual recovery' >&2
+		return 1
+	fi
+	if test "$manifest_resolver_was_altered" -eq 1; then
+		restore_resolver || return 1
+	fi
+	if test "$manifest_resolved_was_altered" -eq 1; then
+		restore_service systemd-resolved.service "$manifest_resolved_was_enabled" "$manifest_resolved_was_active" || return 1
+	fi
+	if test "$manifest_dnsmasq_was_altered" -eq 1; then
+		restore_service dnsmasq.service "$manifest_dnsmasq_was_enabled" "$manifest_dnsmasq_was_active" || return 1
+	fi
+	if test "$manifest_resolv_conf_backup_exists" -eq 1; then
+		rm -f "$resolver_backup_path" || return 1
+	fi
+	rm -f "$manifest_path" || return 1
+}
+
+case "${1:-}" in
+	remove|purge)
+		restore_host_state
+		if test "${1:-}" = purge; then
+			rm -rf /var/lib/opensurge
+			rm -f /etc/opensurge/tls/cert.pem /etc/opensurge/tls/key.pem
+			rmdir /etc/opensurge/tls 2>/dev/null || true
+		fi
+		if command -v systemctl >/dev/null 2>&1; then
+			systemctl daemon-reload || true
+		fi
+		;;
+esac
 
 exit 0

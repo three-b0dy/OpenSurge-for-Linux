@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+reject_direct_install() {
+	printf '%s\n' 'opensurge: run opensurge-install; direct package installation and upgrade are not supported' >&2
+	exit 1
+}
+
+case "${1:-}" in
+	install|upgrade)
+		marker=${OPENSURGE_INSTALLER_MARKER:-}
+		marker_directory=/run/opensurge/installer
+		test -n "$marker" || reject_direct_install
+		test "${marker%/*}" = "$marker_directory" || reject_direct_install
+		marker_name=${marker##*/}
+		case "$marker_name" in
+			transaction-*.marker) ;;
+			*) reject_direct_install ;;
+		esac
+		transaction_id=${marker_name#transaction-}
+		transaction_id=${transaction_id%.marker}
+		test -n "$transaction_id" || reject_direct_install
+		case "$transaction_id" in
+			*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-]*) reject_direct_install ;;
+		esac
+		test -d "$marker_directory" && ! test -L "$marker_directory" || reject_direct_install
+		test "$(stat -c '%u:%a' "$marker_directory" 2>/dev/null || true)" = 0:700 || reject_direct_install
+		test -f "$marker" && ! test -L "$marker" || reject_direct_install
+		test "$(stat -c '%u:%a' "$marker" 2>/dev/null || true)" = 0:600 || reject_direct_install
+		line_one=''
+		line_two=''
+		extra_line=''
+		{
+			IFS= read -r line_one || reject_direct_install
+			IFS= read -r line_two || reject_direct_install
+			if IFS= read -r extra_line || test -n "$extra_line"; then
+				reject_direct_install
+			fi
+		} <"$marker"
+		test "$line_one" = opensurge-installer-marker-v1 || reject_direct_install
+		test "$line_two" = "transaction_id=$transaction_id" || reject_direct_install
+		;;
+esac
+
+exit 0

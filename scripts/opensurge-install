@@ -24,6 +24,10 @@ temporary_policy_identity=''
 temporary_policy_contents=''
 temporary_policy_marker=''
 temporary_config_path=''
+installer_marker_dir=''
+installer_marker_path=''
+installer_marker_identity=''
+installer_marker_contents=''
 install_state_dir=''
 install_manifest_path=''
 resolv_conf_backup_path=''
@@ -45,6 +49,9 @@ cleanup() {
 	local status=$?
 
 	trap - EXIT
+	if test -n "$installer_marker_path"; then
+		restore_installer_marker
+	fi
 	if test "$status" -ne 0 && test "$host_state_transaction_started" -eq 1; then
 		if ! rollback_host_state; then
 			log 'host-state rollback did not complete; preserving install-state recovery records'
@@ -102,9 +109,15 @@ configure_paths() {
 		/*:/*:/*:/*) ;;
 		*) die 'test paths must be absolute' ;;
 	esac
-	etc_dir="$installer_root$PRODUCTION_ETC_DIR"
-	state_dir="$installer_root$PRODUCTION_STATE_DIR"
-	run_dir="$installer_root$PRODUCTION_RUN_DIR"
+	if test "$installer_root" = /; then
+		etc_dir=$PRODUCTION_ETC_DIR
+		state_dir=$PRODUCTION_STATE_DIR
+		run_dir=$PRODUCTION_RUN_DIR
+	else
+		etc_dir="$installer_root$PRODUCTION_ETC_DIR"
+		state_dir="$installer_root$PRODUCTION_STATE_DIR"
+		run_dir="$installer_root$PRODUCTION_RUN_DIR"
+	fi
 
 	if test -n "${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL:-}"; then
 		release_repository_url=${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL%/}
@@ -677,6 +690,66 @@ restore_temporary_policy() {
 	temporary_policy_marker=''
 }
 
+installer_marker_is_ours() {
+	local current_identity
+	local current_contents
+
+	test -f "$installer_marker_path" && ! test -L "$installer_marker_path" || return 1
+	current_identity=$(policy_file_identity "$installer_marker_path") || return 1
+	test "$current_identity" = "$installer_marker_identity" || return 1
+	case "$current_identity" in
+		"$EUID:600:"*) ;;
+		*) return 1 ;;
+	esac
+	current_contents=$(cat "$installer_marker_path") || return 1
+	test "$current_contents" = "$installer_marker_contents"
+}
+
+create_installer_marker() {
+	local opensurge_run_dir="$run_dir/opensurge"
+	local temporary_marker
+
+	test ! -L "$opensurge_run_dir" || die 'OpenSurge runtime directory must not be a symbolic link'
+	mkdir -p "$opensurge_run_dir" || die 'cannot create OpenSurge runtime directory'
+	installer_marker_dir="$opensurge_run_dir/installer"
+	test ! -L "$installer_marker_dir" || die 'installer marker directory must not be a symbolic link'
+	mkdir -p "$installer_marker_dir" || die 'cannot create installer marker directory'
+	chown root:root "$installer_marker_dir" || die 'cannot set installer marker directory ownership'
+	chmod 0700 "$installer_marker_dir" || die 'cannot protect installer marker directory'
+	installer_marker_path="$installer_marker_dir/transaction-$installer_transaction_id.marker"
+	test ! -e "$installer_marker_path" && ! test -L "$installer_marker_path" || \
+		die 'installer transaction marker already exists'
+	installer_marker_contents=$'opensurge-installer-marker-v1\ntransaction_id='"$installer_transaction_id"
+	temporary_marker=$(mktemp "$installer_marker_dir/.marker.XXXXXX") || die 'cannot create installer transaction marker'
+	printf '%s\n' "$installer_marker_contents" >"$temporary_marker" || die 'cannot write installer transaction marker'
+	chmod 0600 "$temporary_marker" || die 'cannot protect installer transaction marker'
+	chown root:root "$temporary_marker" || die 'cannot set installer transaction marker ownership'
+	mv -- "$temporary_marker" "$installer_marker_path" || die 'cannot install transaction marker'
+	installer_marker_identity=$(policy_file_identity "$installer_marker_path") || die 'cannot identify installer transaction marker'
+	case "$installer_marker_identity" in
+		"$EUID:600:"*) ;;
+		*) die 'cannot protect installer transaction marker' ;;
+	esac
+}
+
+restore_installer_marker() {
+	if test -z "$installer_marker_path"; then
+		return
+	fi
+	if installer_marker_is_ours; then
+		rm -f -- "$installer_marker_path" || die 'cannot remove installer transaction marker'
+	else
+		log 'retained changed installer marker instead of removing a file no longer owned by the installer'
+	fi
+	installer_marker_path=''
+	installer_marker_identity=''
+	installer_marker_contents=''
+	if test -n "$installer_marker_dir"; then
+		rmdir "$installer_marker_dir" 2>/dev/null || true
+	fi
+	installer_marker_dir=''
+}
+
 bootstrap_transfer_prerequisites() {
 	if test -e "$bin_dir/policy-rc.d" || test -L "$bin_dir/policy-rc.d"; then
 		log 'existing policy-rc.d controls package service policy during transfer bootstrap'
@@ -697,7 +770,7 @@ install_host_dependencies() {
 	log 'installing OpenSurge host dependencies with package service autostart suppressed'
 	apt-get update
 	DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-		ca-certificates curl dnsmasq nftables iproute2 systemd
+		adduser ca-certificates curl dnsmasq nftables iproute2 systemd
 }
 
 initialize_install_state_paths() {
@@ -1390,7 +1463,9 @@ main() {
 		reject_fresh_port_53_conflicts
 	fi
 	restore_temporary_policy
-	dpkg -i "$package_path"
+	create_installer_marker
+	OPENSURGE_INSTALLER_MARKER="$installer_marker_path" dpkg -i "$package_path"
+	restore_installer_marker
 	if test "$host_state_transaction_started" -eq 1; then
 		install_phase=package_installed
 		write_install_manifest
