@@ -22,9 +22,34 @@ download_dir=''
 temporary_policy_path=''
 temporary_policy_identity=''
 temporary_policy_contents=''
+temporary_policy_marker=''
 temporary_config_path=''
+install_state_dir=''
+install_manifest_path=''
+resolv_conf_backup_path=''
+installer_transaction_id=''
+host_state_transaction_started=0
+selected_resolver=none
+resolver_selection=none
+resolver_was_altered=0
+resolved_was_altered=0
+resolved_was_enabled=0
+resolved_was_active=0
+dnsmasq_was_altered=0
+dnsmasq_was_enabled=0
+dnsmasq_was_active=0
+resolv_conf_backup_exists=0
+resolv_conf_kind=absent
 
 cleanup() {
+	local status=$?
+
+	trap - EXIT
+	if test "$status" -ne 0 && test "$host_state_transaction_started" -eq 1; then
+		if ! rollback_host_state; then
+			log 'host-state rollback did not complete; preserving install-state recovery records'
+		fi
+	fi
 	if test -n "$temporary_policy_path" && temporary_policy_is_ours; then
 		rm -f -- "$temporary_policy_path"
 	fi
@@ -34,6 +59,7 @@ cleanup() {
 	if test -n "$temporary_config_path"; then
 		rm -f -- "$temporary_config_path"
 	fi
+	exit "$status"
 }
 
 die() {
@@ -617,13 +643,14 @@ temporary_policy_is_ours() {
 	test "$current_contents" = "$temporary_policy_contents"
 }
 
-bootstrap_transfer_prerequisites() {
+ensure_temporary_policy() {
 	local policy_path="$bin_dir/policy-rc.d"
 
 	if test -e "$policy_path" || test -L "$policy_path"; then
-		log 'existing policy-rc.d controls package service policy during transfer bootstrap'
+		log 'existing policy-rc.d controls package service policy during dependency installation'
 	else
-		temporary_policy_contents=$'#!/bin/sh\n# OpenSurge installer temporary no-autostart policy\nexit 101'
+		temporary_policy_marker="OpenSurge installer temporary no-autostart policy $installer_transaction_id"
+		temporary_policy_contents=$'#!/bin/sh\n# '"$temporary_policy_marker"$'\nexit 101'
 		printf '%s\n' "$temporary_policy_contents" >"$policy_path" || die 'cannot create temporary no-autostart policy'
 		chmod 0755 "$policy_path" || die 'cannot protect temporary no-autostart policy'
 		temporary_policy_path=$policy_path
@@ -633,6 +660,28 @@ bootstrap_transfer_prerequisites() {
 			*) die 'cannot protect temporary no-autostart policy' ;;
 		esac
 	fi
+}
+
+restore_temporary_policy() {
+	if test -z "$temporary_policy_path"; then
+		return
+	fi
+	if temporary_policy_is_ours; then
+		rm -f -- "$temporary_policy_path" || die 'cannot remove temporary no-autostart policy'
+	else
+		log 'retained changed temporary policy-rc.d instead of removing a file no longer owned by the installer'
+	fi
+	temporary_policy_path=''
+	temporary_policy_identity=''
+	temporary_policy_contents=''
+	temporary_policy_marker=''
+}
+
+bootstrap_transfer_prerequisites() {
+	if test -e "$bin_dir/policy-rc.d" || test -L "$bin_dir/policy-rc.d"; then
+		log 'existing policy-rc.d controls package service policy during transfer bootstrap'
+	fi
+	ensure_temporary_policy
 
 	log 'bootstrapping curl and CA certificates before release retrieval'
 	apt-get update
@@ -641,6 +690,444 @@ bootstrap_transfer_prerequisites() {
 
 ensure_transfer_prerequisites() {
 	transfer_prerequisites_available || bootstrap_transfer_prerequisites
+}
+
+install_host_dependencies() {
+	ensure_temporary_policy
+	log 'installing OpenSurge host dependencies with package service autostart suppressed'
+	apt-get update
+	DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+		ca-certificates curl dnsmasq nftables iproute2 systemd
+}
+
+initialize_install_state_paths() {
+	install_state_dir="$state_dir/install-state"
+	install_manifest_path="$install_state_dir/manifest"
+	resolv_conf_backup_path="$install_state_dir/resolv.conf.before"
+}
+
+service_is_enabled() {
+	local service=$1
+
+	# systemctl uses non-zero status for normal disabled/static states.
+	if systemctl is-enabled "$service" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+service_is_active() {
+	local service=$1
+
+	if systemctl is-active --quiet "$service" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+first_nonlocal_nameserver() {
+	local resolver_path="$etc_dir/resolv.conf"
+	local record_type
+	local address
+	local ignored
+
+	test -r "$resolver_path" || return 1
+	while read -r record_type address ignored; do
+		if test "$record_type" = nameserver && is_nonlocal_nameserver "$address"; then
+			printf '%s' "$address"
+			return 0
+		fi
+	done <"$resolver_path"
+	return 1
+}
+
+ipv4_default_gateway() {
+	local default_route_output
+	local gateway
+
+	default_route_output=$(ip -4 route show default) || return 1
+	gateway=$(route_field "$default_route_output" via || true)
+	is_unicast_ipv4 "$gateway" || return 1
+	printf '%s' "$gateway"
+}
+
+select_resolver_handoff() {
+	local resolver
+	local gateway
+
+	resolver=$(first_nonlocal_nameserver || true)
+	if test -n "$resolver"; then
+		selected_resolver=$resolver
+		resolver_selection=nameserver
+		return
+	fi
+	gateway=$(ipv4_default_gateway || true)
+	if test -n "$gateway"; then
+		selected_resolver=$gateway
+		resolver_selection=gateway
+		return
+	fi
+	die 'no non-local resolver or IPv4 default gateway is available'
+}
+
+preflight_resolver_handoff() {
+	selected_resolver=none
+	resolver_selection=none
+	if service_is_active systemd-resolved.service; then
+		select_resolver_handoff
+	fi
+}
+
+ensure_install_state_directory() {
+	test ! -L "$install_state_dir" || die 'install-state directory must not be a symbolic link'
+	mkdir -p "$install_state_dir" || die 'cannot create install-state directory'
+	chown root:root "$install_state_dir" || die 'cannot set install-state directory ownership'
+	chmod 0700 "$install_state_dir" || die 'cannot protect install-state directory'
+}
+
+write_install_manifest() {
+	local temporary_manifest
+
+	temporary_manifest=$(mktemp "$install_state_dir/.manifest.XXXXXX") || die 'cannot create install-state manifest'
+	chmod 0600 "$temporary_manifest" || die 'cannot protect install-state manifest'
+	cat >"$temporary_manifest" <<EOF
+state_version=1
+installer_version=1
+transaction_id=$installer_transaction_id
+install_phase=$install_phase
+resolver_was_altered=$resolver_was_altered
+resolved_was_altered=$resolved_was_altered
+resolved_was_enabled=$resolved_was_enabled
+resolved_was_active=$resolved_was_active
+dnsmasq_was_altered=$dnsmasq_was_altered
+dnsmasq_was_enabled=$dnsmasq_was_enabled
+dnsmasq_was_active=$dnsmasq_was_active
+resolv_conf_backup_exists=$resolv_conf_backup_exists
+resolv_conf_kind=$resolv_conf_kind
+selected_resolver=$selected_resolver
+resolver_selection=$resolver_selection
+EOF
+	chown root:root "$temporary_manifest" || die 'cannot set install-state manifest ownership'
+	mv -f -- "$temporary_manifest" "$install_manifest_path" || die 'cannot install state manifest'
+	chmod 0600 "$install_manifest_path" || die 'cannot protect install-state manifest'
+}
+
+snapshot_resolv_conf() {
+	local resolver_path="$etc_dir/resolv.conf"
+
+	test ! -e "$resolv_conf_backup_path" && ! test -L "$resolv_conf_backup_path" || \
+		die 'resolv.conf backup already exists without an installation manifest'
+	if test -L "$resolver_path"; then
+		resolv_conf_kind=symlink
+		resolv_conf_backup_exists=1
+		cp -pP "$resolver_path" "$resolv_conf_backup_path" || die 'cannot snapshot symbolic-link resolv.conf'
+	elif test -f "$resolver_path"; then
+		resolv_conf_kind=regular
+		resolv_conf_backup_exists=1
+		cp -pP "$resolver_path" "$resolv_conf_backup_path" || die 'cannot snapshot resolv.conf'
+	elif test ! -e "$resolver_path"; then
+		resolv_conf_kind=absent
+		resolv_conf_backup_exists=0
+	else
+		die 'resolv.conf must be absent, regular, or a symbolic link'
+	fi
+}
+
+capture_service_state() {
+	if service_is_enabled systemd-resolved.service; then
+		resolved_was_enabled=1
+	else
+		resolved_was_enabled=0
+	fi
+	if service_is_active systemd-resolved.service; then
+		resolved_was_active=1
+	else
+		resolved_was_active=0
+	fi
+	if service_is_enabled dnsmasq.service; then
+		dnsmasq_was_enabled=1
+	else
+		dnsmasq_was_enabled=0
+	fi
+	if service_is_active dnsmasq.service; then
+		dnsmasq_was_active=1
+	else
+		dnsmasq_was_active=0
+	fi
+}
+
+replace_resolv_conf() {
+	local resolver_path="$etc_dir/resolv.conf"
+	local temporary_resolver
+
+	temporary_resolver=$(mktemp "$etc_dir/.resolv.conf.opensurge.XXXXXX") || die 'cannot create replacement resolv.conf'
+	chmod 0644 "$temporary_resolver" || die 'cannot protect replacement resolv.conf'
+	printf 'nameserver %s\n' "$selected_resolver" >"$temporary_resolver" || die 'cannot write replacement resolv.conf'
+	chown root:root "$temporary_resolver" || die 'cannot set replacement resolv.conf ownership'
+	mv -f -- "$temporary_resolver" "$resolver_path" || die 'cannot replace resolv.conf'
+}
+
+suppress_generic_dnsmasq() {
+	if test "$dnsmasq_was_enabled" -eq 1 || test "$dnsmasq_was_active" -eq 1; then
+		systemctl disable --now dnsmasq.service || die 'cannot disable generic dnsmasq service'
+		dnsmasq_was_altered=1
+	fi
+	if service_is_enabled dnsmasq.service || service_is_active dnsmasq.service; then
+		die 'generic dnsmasq service remains enabled or active after dependency installation'
+	fi
+}
+
+begin_host_state_transaction() {
+	install_phase=dependencies_installed
+	resolver_was_altered=0
+	resolved_was_altered=0
+	dnsmasq_was_altered=0
+	ensure_install_state_directory
+	snapshot_resolv_conf
+	capture_service_state
+	if test "$resolved_was_active" -eq 1 && test "$selected_resolver" = none; then
+		select_resolver_handoff
+	fi
+	write_install_manifest
+	host_state_transaction_started=1
+
+	if test "$resolved_was_active" -eq 1; then
+		systemctl disable --now systemd-resolved.service || die 'cannot disable systemd-resolved service'
+		resolved_was_altered=1
+		replace_resolv_conf
+		resolver_was_altered=1
+	fi
+	suppress_generic_dnsmasq
+	install_phase=host_owned
+	write_install_manifest
+}
+
+format_port_53_listener() {
+	local protocol=$1
+	local line=$2
+	local address=unknown
+	local process=unknown
+	local pid=unknown
+	local field
+	local -a fields
+
+	read -r -a fields <<<"$line"
+	for field in "${fields[@]}"; do
+		if [[ $field == *:53 ]]; then
+			address=$field
+			break
+		fi
+	done
+	if [[ $line =~ users:\(\(\"([^\"]+)\",pid=([0-9]+) ]]; then
+		process=${BASH_REMATCH[1]}
+		pid=${BASH_REMATCH[2]}
+	fi
+	printf '%s %s pid=%s process=%s' "$protocol" "$address" "$pid" "$process"
+}
+
+port_53_listener_records() {
+	local protocol=$1
+	local ss_option=$2
+	local output
+	local line
+	local records=''
+
+	if ! output=$(ss -H "$ss_option" 'sport = :53'); then
+		die 'cannot inspect port 53 listeners'
+	fi
+	while IFS= read -r line || test -n "$line"; do
+		test -n "$line" || continue
+		records+="$(format_port_53_listener "$protocol" "$line")"$'\n'
+	done <<<"$output"
+	printf '%s' "$records"
+}
+
+reject_fresh_port_53_conflicts() {
+	local records
+	local tcp_records
+	local udp_records
+
+	tcp_records=$(port_53_listener_records tcp -ltnp)
+	udp_records=$(port_53_listener_records udp -lunp)
+	records=$tcp_records
+	if test -n "$records" && test -n "$udp_records"; then
+		records+=$'\n'
+	fi
+	records+=$udp_records
+	if test -n "$records"; then
+		die "port 53 is already used by an unmanaged listener: $records"
+	fi
+}
+
+manifest_seen=''
+manifest_state_version=''
+manifest_installer_version=''
+manifest_transaction_id=''
+manifest_install_phase=''
+manifest_resolver_was_altered=''
+manifest_resolved_was_altered=''
+manifest_resolved_was_enabled=''
+manifest_resolved_was_active=''
+manifest_dnsmasq_was_altered=''
+manifest_dnsmasq_was_enabled=''
+manifest_dnsmasq_was_active=''
+manifest_resolv_conf_backup_exists=''
+manifest_resolv_conf_kind=''
+manifest_selected_resolver=''
+manifest_resolver_selection=''
+
+record_manifest_field() {
+	local key=$1
+	local value=$2
+
+	case " $manifest_seen " in
+		*" $key "*) return 1 ;;
+	esac
+	manifest_seen="$manifest_seen $key"
+	printf -v "manifest_$key" '%s' "$value"
+}
+
+is_manifest_boolean() {
+	case "$1" in
+		0|1) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+load_install_manifest() {
+	local line
+	local key
+	local value
+
+	test -f "$install_manifest_path" && ! test -L "$install_manifest_path" || return 1
+	manifest_seen=''
+	manifest_state_version=''
+	manifest_installer_version=''
+	manifest_transaction_id=''
+	manifest_install_phase=''
+	manifest_resolver_was_altered=''
+	manifest_resolved_was_altered=''
+	manifest_resolved_was_enabled=''
+	manifest_resolved_was_active=''
+	manifest_dnsmasq_was_altered=''
+	manifest_dnsmasq_was_enabled=''
+	manifest_dnsmasq_was_active=''
+	manifest_resolv_conf_backup_exists=''
+	manifest_resolv_conf_kind=''
+	manifest_selected_resolver=''
+	manifest_resolver_selection=''
+	while IFS= read -r line || test -n "$line"; do
+		key=${line%%=*}
+		value=${line#*=}
+		case "$key" in
+			state_version|installer_version|transaction_id|install_phase|resolver_was_altered|resolved_was_altered|resolved_was_enabled|resolved_was_active|dnsmasq_was_altered|dnsmasq_was_enabled|dnsmasq_was_active|resolv_conf_backup_exists|resolv_conf_kind|selected_resolver|resolver_selection)
+				record_manifest_field "$key" "$value" || return 1
+				;;
+			*) return 1 ;;
+		esac
+	done <"$install_manifest_path"
+	test "$manifest_state_version" = 1 && test "$manifest_installer_version" = 1 || return 1
+	[[ $manifest_transaction_id =~ ^[[:alnum:]_.-]+$ ]] || return 1
+	case "$manifest_install_phase" in
+		dependencies_installed|host_owned|package_installed|complete) ;;
+		*) return 1 ;;
+	esac
+	is_manifest_boolean "$manifest_resolver_was_altered" && \
+		is_manifest_boolean "$manifest_resolved_was_altered" && \
+		is_manifest_boolean "$manifest_resolved_was_enabled" && \
+		is_manifest_boolean "$manifest_resolved_was_active" && \
+		is_manifest_boolean "$manifest_dnsmasq_was_altered" && \
+		is_manifest_boolean "$manifest_dnsmasq_was_enabled" && \
+		is_manifest_boolean "$manifest_dnsmasq_was_active" && \
+		is_manifest_boolean "$manifest_resolv_conf_backup_exists" || return 1
+	case "$manifest_resolv_conf_kind:$manifest_resolv_conf_backup_exists" in
+		absent:0) ;;
+		regular:1) test -f "$resolv_conf_backup_path" && ! test -L "$resolv_conf_backup_path" || return 1 ;;
+		symlink:1) test -L "$resolv_conf_backup_path" || return 1 ;;
+		*) return 1 ;;
+	esac
+	case "$manifest_selected_resolver:$manifest_resolver_selection" in
+		none:none) ;;
+		*:nameserver|*:gateway) is_nonlocal_nameserver "$manifest_selected_resolver" || return 1 ;;
+		*) return 1 ;;
+	esac
+}
+
+install_state_exists() {
+	if test -e "$install_manifest_path" || test -L "$install_manifest_path"; then
+		load_install_manifest || die 'existing install-state manifest is invalid; refusing to alter host DNS ownership'
+		return 0
+	fi
+	return 1
+}
+
+stop_opensurge_units() {
+	systemctl stop opensurge-gateway.socket opensurge-gateway.service opensurge-control.service >/dev/null 2>&1 || true
+}
+
+restore_resolv_conf_from_snapshot() {
+	local resolver_path="$etc_dir/resolv.conf"
+
+	case "$manifest_resolv_conf_kind" in
+		absent)
+			rm -f -- "$resolver_path" || return 1
+			;;
+		regular)
+			test -f "$resolv_conf_backup_path" && ! test -L "$resolv_conf_backup_path" || return 1
+			rm -f -- "$resolver_path" || return 1
+			cp -pP "$resolv_conf_backup_path" "$resolver_path" || return 1
+			;;
+		symlink)
+			test -L "$resolv_conf_backup_path" || return 1
+			rm -f -- "$resolver_path" || return 1
+			cp -pP "$resolv_conf_backup_path" "$resolver_path" || return 1
+			;;
+		*) return 1 ;;
+	esac
+}
+
+restore_service_state() {
+	local service=$1
+	local was_enabled=$2
+	local was_active=$3
+
+	if test "$was_enabled" -eq 1; then
+		systemctl enable "$service" || return 1
+	else
+		systemctl disable "$service" || return 1
+	fi
+	if test "$was_active" -eq 1; then
+		systemctl start "$service" || return 1
+	else
+		systemctl stop "$service" || return 1
+	fi
+}
+
+restore_host_state() {
+	if test ! -e "$install_manifest_path" && ! test -L "$install_manifest_path"; then
+		host_state_transaction_started=0
+		return 0
+	fi
+	load_install_manifest || return 1
+	stop_opensurge_units
+	if test "$manifest_resolver_was_altered" -eq 1; then
+		restore_resolv_conf_from_snapshot || return 1
+	fi
+	if test "$manifest_resolved_was_altered" -eq 1; then
+		restore_service_state systemd-resolved.service "$manifest_resolved_was_enabled" "$manifest_resolved_was_active" || return 1
+	fi
+	if test "$manifest_dnsmasq_was_altered" -eq 1; then
+		restore_service_state dnsmasq.service "$manifest_dnsmasq_was_enabled" "$manifest_dnsmasq_was_active" || return 1
+	fi
+	rm -f -- "$install_manifest_path" || return 1
+	if test "$manifest_resolv_conf_backup_exists" -eq 1; then
+		rm -f -- "$resolv_conf_backup_path" || return 1
+	fi
+	host_state_transaction_started=0
+}
+
+rollback_host_state() {
+	restore_host_state
 }
 
 download_url() {
@@ -799,6 +1286,9 @@ main() {
 	local dhcp_range_end=''
 	local package_source_count=0
 	local fresh_config=0
+	local fresh_install=1
+	local state_already_owned=0
+	local installed_product_binary=''
 
 	while test "$#" -gt 0; do
 		case "$1" in
@@ -855,10 +1345,22 @@ main() {
 
 	validate_arguments
 	configure_paths
+	initialize_install_state_paths
+	installer_transaction_id="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
 	require_root_and_tty
 	if test ! -e "$etc_dir/opensurge/config.yaml" && test ! -L "$etc_dir/opensurge/config.yaml"; then
 		fresh_config=1
 		collect_fresh_topology
+	else
+		fresh_install=0
+	fi
+	installed_product_binary="$installer_root$PRODUCTION_BIN_DIR/opensurge"
+	if install_state_exists; then
+		state_already_owned=1
+		fresh_install=0
+	fi
+	if test -x "$installed_product_binary"; then
+		fresh_install=0
 	fi
 	local architecture
 	local package_path=''
@@ -873,11 +1375,33 @@ main() {
 	verify_package_architecture "$package_path" "$architecture"
 	verify_checksum "$package_path" "$checksum_path"
 	log "verified release asset $(basename -- "$package_path") for $architecture"
+	if test "$state_already_owned" -eq 0; then
+		preflight_resolver_handoff
+	fi
+	install_host_dependencies
+	if test "$state_already_owned" -eq 0; then
+		begin_host_state_transaction
+	elif service_is_enabled dnsmasq.service || service_is_active dnsmasq.service; then
+		die 'generic dnsmasq service is enabled or active despite existing OpenSurge ownership state'
+	fi
+	if test "$fresh_install" -eq 1; then
+		reject_fresh_port_53_conflicts
+	fi
+	restore_temporary_policy
 	dpkg -i "$package_path"
+	if test "$host_state_transaction_started" -eq 1; then
+		install_phase=package_installed
+		write_install_manifest
+	fi
 	if test "$fresh_config" -eq 1; then
 		render_fresh_config
 	else
 		log "preserved existing OpenSurge configuration at $etc_dir/opensurge/config.yaml"
+	fi
+	if test "$host_state_transaction_started" -eq 1; then
+		install_phase=complete
+		write_install_manifest
+		host_state_transaction_started=0
 	fi
 	printf 'OpenSurge release asset installed.\n' >"$tty_path"
 }

@@ -26,3 +26,9 @@ the Linux namespace evidence for DHCP, DNS, forwarding, NAT and rollback;
 `make linux-lab-test-tun` additionally requires no-explicit-proxy HTTPS traffic
 to appear in the mihomo TUN log. Both gates require a Linux host with root
 network-namespace support.
+
+Before this gateway lifecycle begins, the release installer performs the
+separate host DNS ownership transaction described in
+[Linux installer DNS ownership](linux-installer-lifecycle.md). It preserves
+the prior resolver shape and only suppresses the generic host DNS services
+whose previous state it records.

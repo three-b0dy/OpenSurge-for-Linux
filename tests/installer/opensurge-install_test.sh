@@ -72,6 +72,31 @@ assert_file_mode() {
 	test "$actual" = "$expected" || fail "mode for $file = $actual, want $expected"
 }
 
+assert_symlink_target() {
+	local file=$1
+	local expected=$2
+	local actual
+
+	test -L "$file" || fail "expected symbolic link: $file"
+	actual=$(readlink "$file")
+	test "$actual" = "$expected" || fail "link target for $file = $actual, want $expected"
+}
+
+assert_regular_resolv_conf() {
+	local expected=$1
+	local resolver_path="$test_root/root/etc/resolv.conf"
+
+	test -f "$resolver_path" && ! test -L "$resolver_path" || fail 'resolv.conf is not a regular file'
+	assert_contains "$resolver_path" "$expected"
+}
+
+assert_manifest() {
+	local expected=$1
+	local manifest="$test_root/root/var/lib/opensurge/install-state/manifest"
+
+	assert_contains "$manifest" "$expected"
+}
+
 assert_command_not_invoked() {
 	local file=$1
 	local command_name=$2
@@ -119,6 +144,9 @@ if test "${1:-}" = update; then
 			;;
 	esac
 fi
+if test "${OPENSURGE_INSTALLER_TEST_APT_FAIL:-}" = "${1:-}"; then
+	exit 42
+fi
 exit 0
 EOF
 	chmod 0755 "$fake_bin/apt-get"
@@ -136,6 +164,9 @@ fi
 if test "$#" -eq 2 && test "$1" = -i; then
 	if test "${OPENSURGE_INSTALLER_TEST_EXPECT_FRESH_CONFIG:-0}" = 1; then
 		test ! -e "$OPENSURGE_INSTALLER_TEST_CONFIG_PATH" || exit 1
+	fi
+	if test "${OPENSURGE_INSTALLER_TEST_DPKG_FAIL:-}" = 1; then
+		exit 43
 	fi
 	touch "$OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH"
 fi
@@ -206,6 +237,105 @@ case "$1:$2:$3" in
 	esac
 EOF
 	chmod 0755 "$fake_bin/ip"
+}
+
+make_fake_systemctl() {
+	cat >"$fake_bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+
+state_directory="$OPENSURGE_INSTALLER_ROOT/.systemctl-state"
+service="${!#}"
+state_file="$state_directory/${service//\//_}"
+mkdir -p "$state_directory"
+
+initial_state() {
+	case "$service" in
+		systemd-resolved.service) printf '%s' "${OPENSURGE_INSTALLER_TEST_RESOLVED_STATE:-disabled-inactive}" ;;
+		dnsmasq.service) printf '%s' "${OPENSURGE_INSTALLER_TEST_DNSMASQ_STATE:-disabled-inactive}" ;;
+		*) printf '%s' 'disabled-inactive' ;;
+	esac
+}
+
+read_state() {
+	if test -f "$state_file"; then
+		cat "$state_file"
+	else
+		initial_state
+	fi
+}
+
+write_state() {
+	printf '%s\n' "$1" >"$state_file"
+}
+
+state=$(read_state)
+case "${1:-}" in
+	is-enabled)
+		if test "${state%-*}" = enabled; then
+			printf '%s\n' enabled
+			exit 0
+		fi
+		printf '%s\n' disabled
+		exit 1
+		;;
+	is-active)
+		if test "${state#*-}" = active; then
+			printf '%s\n' active
+			exit 0
+		fi
+		printf '%s\n' inactive
+		exit 3
+		;;
+	disable)
+		write_state "disabled-${state#*-}"
+		case " $* " in *' --now '*) write_state 'disabled-inactive' ;; esac
+		;;
+	enable) write_state "enabled-${state#*-}" ;;
+	start) write_state "${state%-*}-active" ;;
+	stop) write_state "${state%-*}-inactive" ;;
+esac
+EOF
+	chmod 0755 "$fake_bin/systemctl"
+}
+
+make_fake_ss() {
+	cat >"$fake_bin/ss" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+
+case " $* " in
+	*' -ltnp '*) if test -n "${OPENSURGE_INSTALLER_TEST_PORT53_TCP:-}"; then printf '%s\n' "$OPENSURGE_INSTALLER_TEST_PORT53_TCP"; fi ;;
+	*' -lunp '*) if test -n "${OPENSURGE_INSTALLER_TEST_PORT53_UDP:-}"; then printf '%s\n' "$OPENSURGE_INSTALLER_TEST_PORT53_UDP"; fi ;;
+esac
+EOF
+	chmod 0755 "$fake_bin/ss"
+}
+
+make_fake_readlink() {
+	cat >"$fake_bin/readlink" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+exec /usr/bin/readlink "$@"
+EOF
+	chmod 0755 "$fake_bin/readlink"
+}
+
+make_fake_cp() {
+	cat >"$fake_bin/cp" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+exec /bin/cp "$@"
+EOF
+	chmod 0755 "$fake_bin/cp"
 }
 
 make_fake_opensurge() {
@@ -288,6 +418,12 @@ run_installer() {
 		OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL="$release_base_url" \
 		OPENSURGE_INSTALLER_TEST_TRANSFER_PREREQUISITES="$transfer_prerequisites" \
 		OPENSURGE_INSTALLER_TEST_POLICY_MUTATION="${OPENSURGE_TEST_POLICY_MUTATION:-}" \
+		OPENSURGE_INSTALLER_TEST_APT_FAIL="${OPENSURGE_TEST_APT_FAIL:-}" \
+		OPENSURGE_INSTALLER_TEST_DPKG_FAIL="${OPENSURGE_TEST_DPKG_FAIL:-}" \
+		OPENSURGE_INSTALLER_TEST_RESOLVED_STATE="${OPENSURGE_TEST_RESOLVED_STATE:-}" \
+		OPENSURGE_INSTALLER_TEST_DNSMASQ_STATE="${OPENSURGE_TEST_DNSMASQ_STATE:-}" \
+		OPENSURGE_INSTALLER_TEST_PORT53_TCP="${OPENSURGE_TEST_PORT53_TCP:-}" \
+		OPENSURGE_INSTALLER_TEST_PORT53_UDP="${OPENSURGE_TEST_PORT53_UDP:-}" \
 		OPENSURGE_INSTALLER_TEST_IP_SCENARIO="${OPENSURGE_INSTALLER_TEST_IP_SCENARIO:-ens18}" \
 		OPENSURGE_INSTALLER_TEST_CONFIG_PATH="$config_path" \
 		OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH="$test_root/package-phase-complete" \
@@ -328,7 +464,7 @@ expect_success() {
 	: >"$captured_stderr"
 	: >"$captured_commands"
 	run_installer "$@" || fail "installer rejected valid invocation: $*"
-	assert_not_contains "$captured_commands" 'apt-get install'
+	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_contains "$captured_commands" 'dpkg -i'
 	assert_not_contains "$captured_stdout" "$test_secret"
 	assert_not_contains "$captured_stderr" "$test_secret"
@@ -403,6 +539,160 @@ expect_default_route_resolver_fallback() {
 	: >"$captured_commands"
 	run_installer --version v1.2.3 || fail 'installer rejected a valid IPv6 resolver fallback'
 	assert_generated_same_lan_config
+}
+
+prepare_symlinked_resolver() {
+	local target_relative='../run/systemd/resolve/stub-resolv.conf'
+	local target="$test_root/root/run/systemd/resolve/stub-resolv.conf"
+
+	mkdir -p "$(dirname "$target")"
+	printf '%s\n' "${1:-nameserver 9.9.9.9}" >"$target"
+	rm -f "$test_root/root/etc/resolv.conf"
+	ln -s "$target_relative" "$test_root/root/etc/resolv.conf"
+}
+
+begin_host_state_case() {
+	reset_install_root
+	rm -f "$fake_bin/policy-rc.d"
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+}
+
+expect_resolved_symlink_is_snapshotted_and_replaced() {
+	local state_root="$test_root/root/var/lib/opensurge/install-state"
+
+	begin_host_state_case
+	prepare_symlinked_resolver 'nameserver 9.9.9.9'
+	OPENSURGE_TEST_RESOLVED_STATE=enabled-active run_installer --version v1.2.3 || \
+		fail 'installer did not coordinate an active systemd-resolved service'
+	assert_manifest 'state_version=1'
+	assert_manifest 'resolved_was_active=1'
+	assert_manifest 'resolv_conf_kind=symlink'
+	assert_manifest 'resolv_conf_backup_exists=1'
+	assert_not_contains "$state_root/manifest" 'nameserver 9.9.9.9'
+	assert_file_mode "$state_root" 700
+	assert_file_mode "$state_root/manifest" 600
+	assert_symlink_target "$state_root/resolv.conf.before" '../run/systemd/resolve/stub-resolv.conf'
+	assert_regular_resolv_conf 'nameserver 9.9.9.9'
+}
+
+expect_nonlocal_ipv6_resolver_is_preserved() {
+	begin_host_state_case
+	printf '%s\n' 'nameserver 2001:4860:4860::8888' >"$test_root/root/etc/resolv.conf"
+	OPENSURGE_TEST_RESOLVED_STATE=enabled-active run_installer --version v1.2.3 || \
+		fail 'installer rejected a non-local IPv6 resolver'
+	assert_manifest 'selected_resolver=2001:4860:4860::8888'
+	assert_regular_resolv_conf 'nameserver 2001:4860:4860::8888'
+}
+
+expect_gateway_is_used_when_resolver_is_local() {
+	begin_host_state_case
+	printf '%s\n' 'nameserver 127.0.0.53' >"$test_root/root/etc/resolv.conf"
+	OPENSURGE_TEST_RESOLVED_STATE=enabled-active run_installer --version v1.2.3 || \
+		fail 'installer rejected IPv4 default-gateway resolver fallback'
+	assert_manifest 'selected_resolver=192.0.2.1'
+	assert_regular_resolv_conf 'nameserver 192.0.2.1'
+}
+
+expect_no_resolver_source_aborts_before_host_mutation() {
+	begin_host_state_case
+	mkdir -p "$(dirname "$config_path")"
+	printf '%s\n' 'existing config establishes upgrade facts' >"$config_path"
+	printf '%s\n' 'nameserver 127.0.0.53' >"$test_root/root/etc/resolv.conf"
+	if OPENSURGE_TEST_RESOLVED_STATE=enabled-active \
+		OPENSURGE_INSTALLER_TEST_IP_SCENARIO=no-via run_installer --version v1.2.3; then
+		fail 'installer accepted an active resolved service without a safe resolver source'
+	fi
+	assert_contains "$captured_stderr" 'no non-local resolver or IPv4 default gateway is available'
+	assert_not_contains "$captured_commands" 'apt-get install'
+	assert_not_contains "$captured_commands" 'systemctl disable'
+	assert_file_equals "$test_root/root/etc/resolv.conf" $'nameserver 127.0.0.53\n'
+	assert_file_missing "$test_root/root/var/lib/opensurge/install-state/manifest"
+}
+
+expect_fresh_port_53_conflict_aborts_without_killing_listener() {
+	begin_host_state_case
+	if OPENSURGE_TEST_PORT53_UDP='udp UNCONN 0 0 0.0.0.0:53 0.0.0.0:* users:(("unbound",pid=123,fd=6))' \
+		run_installer --version v1.2.3; then
+		fail 'installer accepted an unknown UDP port 53 listener during fresh install'
+	fi
+	assert_contains "$captured_stderr" 'udp 0.0.0.0:53 pid=123 process=unbound'
+	assert_not_contains "$captured_commands" 'kill 123'
+	assert_contains "$captured_commands" 'ss -H -lunp'
+	assert_file_missing "$test_root/root/var/lib/opensurge/install-state/manifest"
+}
+
+expect_fresh_port_53_conflict_reports_each_protocol() {
+	begin_host_state_case
+	if OPENSURGE_TEST_PORT53_TCP='tcp LISTEN 0 4096 127.0.0.1:53 0.0.0.0:* users:(("named",pid=12,fd=4))' \
+		OPENSURGE_TEST_PORT53_UDP='udp UNCONN 0 0 0.0.0.0:53 0.0.0.0:* users:(("unbound",pid=123,fd=6))' \
+		run_installer --version v1.2.3; then
+		fail 'installer accepted TCP and UDP port 53 listeners during fresh install'
+	fi
+	assert_contains "$captured_stderr" $'tcp 127.0.0.1:53 pid=12 process=named\nudp 0.0.0.0:53 pid=123 process=unbound'
+	assert_not_contains "$captured_stderr" 'process=namedudp'
+	assert_not_contains "$captured_commands" 'kill 12'
+	assert_not_contains "$captured_commands" 'kill 123'
+}
+
+expect_disabled_dnsmasq_is_not_touched() {
+	begin_host_state_case
+	OPENSURGE_TEST_DNSMASQ_STATE=disabled-inactive run_installer --version v1.2.3 || \
+		fail 'installer rejected a host with disabled generic dnsmasq'
+	assert_not_contains "$captured_commands" 'systemctl disable --now dnsmasq.service'
+	assert_manifest 'dnsmasq_was_active=0'
+	assert_manifest 'dnsmasq_was_enabled=0'
+	assert_manifest 'dnsmasq_was_altered=0'
+}
+
+expect_existing_policy_survives_host_dependency_install() {
+	begin_host_state_case
+	printf '#!/bin/sh\n# user policy\nexit 0\n' >"$fake_bin/policy-rc.d"
+	chmod 0755 "$fake_bin/policy-rc.d"
+	run_installer --version v1.2.3 || fail 'installer rejected an existing package service policy'
+	assert_contains "$fake_bin/policy-rc.d" '# user policy'
+	assert_not_contains "$captured_commands" 'rm'
+	rm -f "$fake_bin/policy-rc.d"
+}
+
+expect_temporary_policy_is_removed_after_dependency_failure() {
+	begin_host_state_case
+	if OPENSURGE_TEST_APT_FAIL=install run_installer --version v1.2.3; then
+		fail 'installer accepted a failed host dependency installation'
+	fi
+	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends ca-certificates curl dnsmasq nftables iproute2 systemd'
+	assert_file_missing "$fake_bin/policy-rc.d"
+	assert_not_contains "$captured_commands" 'dpkg -i'
+}
+
+expect_upgrade_skips_port_53_rejection() {
+	begin_host_state_case
+	mkdir -p "$(dirname "$config_path")"
+	printf '%s\n' 'existing config establishes upgrade facts' >"$config_path"
+	OPENSURGE_TEST_PORT53_TCP='tcp LISTEN 0 4096 0.0.0.0:53 0.0.0.0:* users:(("opensurge-gateway",pid=77,fd=3))' \
+		run_installer --version v1.2.3 || fail 'upgrade rejected its existing port 53 listener'
+	assert_command_not_invoked "$captured_commands" ss
+}
+
+expect_failure_rolls_back_owned_dns_state() {
+	local state_root="$test_root/root/var/lib/opensurge/install-state"
+
+	begin_host_state_case
+	prepare_symlinked_resolver 'nameserver 9.9.9.9'
+	if OPENSURGE_TEST_RESOLVED_STATE=enabled-active \
+		OPENSURGE_TEST_DNSMASQ_STATE=enabled-active \
+		OPENSURGE_TEST_DPKG_FAIL=1 run_installer --version v1.2.3; then
+		fail 'installer accepted a failed OpenSurge package installation'
+	fi
+	assert_symlink_target "$test_root/root/etc/resolv.conf" '../run/systemd/resolve/stub-resolv.conf'
+	assert_contains "$test_root/root/run/systemd/resolve/stub-resolv.conf" 'nameserver 9.9.9.9'
+	assert_contains "$captured_commands" 'systemctl enable systemd-resolved.service'
+	assert_contains "$captured_commands" 'systemctl start systemd-resolved.service'
+	assert_contains "$captured_commands" 'systemctl enable dnsmasq.service'
+	assert_contains "$captured_commands" 'systemctl start dnsmasq.service'
+	assert_file_missing "$state_root/manifest"
+	assert_file_missing "$state_root/resolv.conf.before"
 }
 
 expect_fail_when_checksum_missing() {
@@ -547,13 +837,17 @@ mkdir -p "$fake_bin"
 : >"$captured_commands"
 : >"$fake_tty"
 chmod 0600 "$fake_tty"
-for command_name in chown systemctl ss; do
+for command_name in chown; do
 	make_fake_command "$command_name"
 done
 make_fake_apt_get
 make_fake_dpkg
 make_fake_dpkg_deb
 make_fake_ip
+make_fake_systemctl
+make_fake_ss
+make_fake_readlink
+make_fake_cp
 make_fake_opensurge
 start_release_fixture
 
@@ -605,6 +899,21 @@ expect_transfer_bootstrap_preserves_modified_temporary_policy
 expect_transfer_bootstrap_preserves_replaced_temporary_policy
 expect_transfer_bootstrap_preserves_existing_policy
 expect_offline_final_symlink_uses_target_and_adjacent_checksum
+
+# DNS ownership starts only after the release asset is verified. These cases
+# exercise state-file representation, resolver selection, service ownership,
+# port safety, and automatic rollback through the installer itself.
+expect_resolved_symlink_is_snapshotted_and_replaced
+expect_nonlocal_ipv6_resolver_is_preserved
+expect_gateway_is_used_when_resolver_is_local
+expect_no_resolver_source_aborts_before_host_mutation
+expect_fresh_port_53_conflict_aborts_without_killing_listener
+expect_fresh_port_53_conflict_reports_each_protocol
+expect_disabled_dnsmasq_is_not_touched
+expect_existing_policy_survives_host_dependency_install
+expect_temporary_policy_is_removed_after_dependency_failure
+expect_upgrade_skips_port_53_rejection
+expect_failure_rolls_back_owned_dns_state
 
 # Fresh configurations use the exact kernel default-route link name. They do
 # not assign a friendly alias or implicitly create a downstream network.

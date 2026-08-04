@@ -49,3 +49,6 @@ mihomo TUN log. Both gates require a Linux host with root network namespaces.
 
 Use [docs/linux-migration.md](../../../docs/linux-migration.md) for migration
 semantics and manual mapping requirements.
+
+The release-installer resolver, service, port-53, and recovery contract is in
+[Linux installer DNS ownership](concepts/linux-installer-lifecycle.md).
