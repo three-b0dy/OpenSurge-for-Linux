@@ -194,7 +194,11 @@ case "$1:$2:$3" in
 	-4:addr:show)
 		case "${6:-}" in
 			br-lan)
-				test "$scenario" = missing-lan-address || printf '%s\n' '    inet 192.168.50.1/24 scope global br-lan'
+				case "$scenario" in
+					missing-lan-address) ;;
+					lan-ip-in-dhcp-range) printf '%s\n' '    inet 192.168.50.150/24 scope global br-lan' ;;
+					*) printf '%s\n' '    inet 192.168.50.1/24 scope global br-lan' ;;
+				esac
 				;;
 			enp1s0.50) printf '%s\n' '    inet 198.51.100.2/24 scope global enp1s0.50' ;;
 			esac
@@ -390,6 +394,15 @@ expect_isolated_config_uses_exact_link_names() {
 	assert_contains "$config_path" 'range_end: "192.168.50.200"'
 	go run "$repo_root/cmd/opensurge" config validate --config "$config_path" >/dev/null || \
 		fail 'generated isolated configuration did not pass opensurge config validate'
+}
+
+expect_default_route_resolver_fallback() {
+	reset_install_root
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	run_installer --version v1.2.3 || fail 'installer rejected a valid IPv6 resolver fallback'
+	assert_generated_same_lan_config
 }
 
 expect_fail_when_checksum_missing() {
@@ -624,5 +637,30 @@ expect_topology_failure --version v1.2.3 --mode isolated_lan \
 	--lan-ip 192.168.50.1 --lan-cidr 192.168.50.0/24 \
 	--dhcp-range-start 192.168.51.100 --dhcp-range-end 192.168.51.200
 assert_contains "$captured_stderr" 'DHCP range must remain inside LAN CIDR'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=lan-ip-in-dhcp-range expect_topology_failure --version v1.2.3 \
+	--mode isolated_lan --downstream-interface br-lan --upstream-interface eth0 \
+	--lan-ip 192.168.50.150 --lan-cidr 192.168.50.0/24 \
+	--dhcp-range-start 192.168.50.100 --dhcp-range-end 192.168.50.200
+assert_contains "$captured_stderr" 'DHCP range must not include LAN IPv4'
+
+expect_topology_failure --version v1.2.3 --mode isolated_lan \
+	--downstream-interface br-lan --upstream-interface br-lan \
+	--lan-ip 192.168.50.1 --lan-cidr 192.168.50.0/24
+assert_contains "$captured_stderr" 'isolated_lan requires distinct downstream and upstream interfaces'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=no-via \
+	OPENSURGE_INSTALLER_TEST_RESOLVER='nameserver 1::2::3' \
+	expect_topology_failure --version v1.2.3
+assert_contains "$captured_stderr" 'no default-route gateway or non-local resolver is available'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=no-via \
+	OPENSURGE_INSTALLER_TEST_RESOLVER='nameserver fe90::1' \
+	expect_topology_failure --version v1.2.3
+assert_contains "$captured_stderr" 'no default-route gateway or non-local resolver is available'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=no-via \
+	OPENSURGE_INSTALLER_TEST_RESOLVER='nameserver 2001:4860:4860::8888' \
+	expect_default_route_resolver_fallback
 
 echo "opensurge installer release asset tests passed"

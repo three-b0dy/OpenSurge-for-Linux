@@ -119,6 +119,63 @@ is_unicast_ipv4() {
 	test "$address" != 255.255.255.255
 }
 
+ipv6_group_count() {
+	local value=$1
+	local part
+	local count=0
+	local -a parts
+
+	test -n "$value" || {
+		printf '0'
+		return
+	}
+	IFS=: read -r -a parts <<<"$value"
+	for part in "${parts[@]}"; do
+		[[ $part =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+		count=$((count + 1))
+	done
+	printf '%s' "$count"
+}
+
+is_nonlocal_ipv6() {
+	local address=$1
+	local left
+	local right
+	local left_count
+	local right_count
+	local group_count
+	local compact=0
+	local flattened
+
+	[[ $address == *:* ]] || return 1
+	[[ $address != *[!0-9A-Fa-f:]* ]] || return 1
+	[[ $address != *::*::* ]] || return 1
+	if [[ $address == *::* ]]; then
+		compact=1
+		left=${address%%::*}
+		right=${address#*::}
+		[[ $left != *: && $right != :* ]] || return 1
+		left_count=$(ipv6_group_count "$left") || return 1
+		right_count=$(ipv6_group_count "$right") || return 1
+		group_count=$((left_count + right_count))
+		test "$group_count" -lt 8 || return 1
+	else
+		[[ $address != :* && $address != *: ]] || return 1
+		group_count=$(ipv6_group_count "$address") || return 1
+		test "$group_count" -eq 8 || return 1
+	fi
+
+	flattened=${address//:/}
+	[[ ! $flattened =~ ^0+$ ]] || return 1
+	if test "$compact" -eq 1 && test -z "$left" && [[ $right =~ ^0*1$ ]]; then
+		return 1
+	fi
+	if test "$compact" -eq 0 && [[ $flattened =~ ^0*1$ ]]; then
+		return 1
+	fi
+	[[ $address != [Ff][Ff]* && $address != [Ff][Ee][89AaBb][0-9A-Fa-f]:* ]]
+}
+
 is_ipv4_cidr() {
 	local value=$1
 	local address prefix
@@ -248,11 +305,7 @@ is_nonlocal_nameserver() {
 	if is_unicast_ipv4 "$address"; then
 		return 0
 	fi
-	case "$address" in
-		::|::1|0:0:0:0:0:0:0:0|0:0:0:0:0:0:0:1|[Ff][Ff]*|[Ff][Ee]8[0-9A-Fa-f]:*) return 1 ;;
-		*:* ) [[ $address =~ ^[0-9A-Fa-f:.%]+$ ]] ;;
-		*) return 1 ;;
-	esac
+	is_nonlocal_ipv6 "$address"
 }
 
 has_nonlocal_resolver() {
@@ -291,6 +344,7 @@ validate_dhcp_range() {
 	local end=$3
 	local start_number
 	local end_number
+	local lan_number
 
 	is_unicast_ipv4 "$start" || die 'invalid DHCP range start'
 	is_unicast_ipv4 "$end" || die 'invalid DHCP range end'
@@ -299,8 +353,9 @@ validate_dhcp_range() {
 	ipv4_is_network_or_broadcast "$end" "$cidr" && die 'DHCP range must not include the network or broadcast address'
 	start_number=$(ipv4_to_u32 "$start")
 	end_number=$(ipv4_to_u32 "$end")
+	lan_number=$(ipv4_to_u32 "$lan_ip")
 	test "$start_number" -le "$end_number" || die 'DHCP range start must not be after DHCP range end'
-	test "$lan_ip" != "$start" && test "$lan_ip" != "$end" || die 'LAN IPv4 must not be a DHCP range endpoint'
+	test "$lan_number" -lt "$start_number" || test "$lan_number" -gt "$end_number" || die 'DHCP range must not include LAN IPv4'
 }
 
 collect_default_route_topology() {
@@ -347,6 +402,7 @@ collect_isolated_topology() {
 
 	validate_interface_exists "$downstream_interface"
 	validate_interface_exists "$upstream_interface"
+	test "$downstream_interface" != "$upstream_interface" || die 'isolated_lan requires distinct downstream and upstream interfaces'
 	interface_has_ipv4 "$downstream_interface" "$lan_ip" || die 'LAN IPv4 is not configured on downstream interface'
 	ipv4_in_cidr "$lan_ip" "$lan_cidr" || die 'LAN IPv4 must fall inside LAN CIDR'
 	ipv4_is_network_or_broadcast "$lan_ip" "$lan_cidr" && die 'LAN IPv4 must not be the network or broadcast address'
