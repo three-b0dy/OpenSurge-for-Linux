@@ -9,3 +9,4 @@
 /output/playwright/
 /.playwright-cli/
 *.tsbuildinfo
+.superpowers/
