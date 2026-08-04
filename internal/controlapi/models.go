@@ -3,11 +3,11 @@ package controlapi
 import (
 	"time"
 
-	"open-mihomo-gateway/internal/device"
-	"open-mihomo-gateway/internal/doctor"
-	"open-mihomo-gateway/internal/gateway"
-	"open-mihomo-gateway/internal/macosnetwork"
-	"open-mihomo-gateway/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 )
 
 const SchemaVersion = 1

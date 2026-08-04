@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/device"
-	"open-mihomo-gateway/internal/doctor"
-	"open-mihomo-gateway/internal/gateway"
-	"open-mihomo-gateway/internal/mihomo"
-	"open-mihomo-gateway/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/doctor"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
-const defaultConfigPath = "examples/config.example.yaml"
+const defaultConfigPath = "/etc/opensurge/config.yaml"
 
 var (
 	fetchProxyGroups    = mihomo.FetchProxyGroups
@@ -1045,7 +1045,7 @@ func printUsage(out *os.File) {
 	fmt.Fprintf(out, `OpenSurge for Mac
 
 Usage:
-  omg <command> --config <path>
+  opensurge <command> --config <path>
 
 Commands:
   start    prepare runtime state and start gateway services

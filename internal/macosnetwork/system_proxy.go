@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"open-mihomo-gateway/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
 const localSystemProxyHost = "127.0.0.1"

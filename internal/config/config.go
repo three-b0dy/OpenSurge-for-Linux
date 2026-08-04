@@ -1,6 +1,6 @@
 package config
 
-import "open-mihomo-gateway/internal/device"
+import "github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 
 import (
 	"fmt"

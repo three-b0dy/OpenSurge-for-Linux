@@ -13,12 +13,25 @@ import (
 	"testing"
 	"time"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/device"
-	"open-mihomo-gateway/internal/gateway"
-	"open-mihomo-gateway/internal/mihomo"
-	"open-mihomo-gateway/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
+
+func TestRunNoArgumentsPrintsOpenSurgeUsage(t *testing.T) {
+	code := run(nil)
+	if code != 2 {
+		t.Fatalf("run(nil) = %d, want 2", code)
+	}
+}
+
+func TestDefaultConfigPath(t *testing.T) {
+	if defaultConfigPath != "/etc/opensurge/config.yaml" {
+		t.Fatalf("defaultConfigPath = %q", defaultConfigPath)
+	}
+}
 
 func TestRenderMihomoCommandPrintsOverlayConfig(t *testing.T) {
 	dir := t.TempDir()

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
 func TestRenderConfig(t *testing.T) {

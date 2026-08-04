@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"open-mihomo-gateway/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 )
 
 // ReconcilePolicyLeases removes only stale lease rows for MAC addresses owned

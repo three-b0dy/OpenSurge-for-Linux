@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/mihomo"
-	"open-mihomo-gateway/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 
 	"gopkg.in/yaml.v3"
 )

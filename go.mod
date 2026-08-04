@@ -1,4 +1,4 @@
-module open-mihomo-gateway
+module github.com/three-b0dy/OpenSurge-for-Linux
 
 go 1.25
 

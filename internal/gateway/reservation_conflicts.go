@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"open-mihomo-gateway/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 )
 
 // checkReservationConflicts is intentionally limited to same-WiFi DHCP

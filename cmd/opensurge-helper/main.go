@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"open-mihomo-gateway/internal/controlapi"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/controlapi"
 )
 
 func main() {

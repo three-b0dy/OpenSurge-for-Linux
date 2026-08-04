@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"open-mihomo-gateway/internal/controlapi"
-	"open-mihomo-gateway/internal/webui"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/controlapi"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/webui"
 )
 
 func main() {

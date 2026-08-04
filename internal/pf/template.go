@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"text/template"
 
-	"open-mihomo-gateway/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 )
 
 const anchorTemplate = `{{ if .SameLAN }}nat on {{ .UpstreamInterface }} from {{ .LanCIDR }} to ! {{ .LanCIDR }} -> ({{ .UpstreamInterface }})

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"open-mihomo-gateway/internal/installconfig"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/installconfig"
 )
 
 func main() {

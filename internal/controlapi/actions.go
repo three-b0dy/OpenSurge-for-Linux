@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/gateway"
-	"open-mihomo-gateway/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
 )
 
 type ActionRunner interface {

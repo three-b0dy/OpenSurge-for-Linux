@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"gopkg.in/yaml.v3"
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/device"
 )
 
 type policySections struct {

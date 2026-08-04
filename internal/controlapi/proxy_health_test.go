@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 )
 
 func TestProxyHealthEndpointsExposeAndTestCurrentNodes(t *testing.T) {

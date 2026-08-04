@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/device"
-	"open-mihomo-gateway/internal/dhcp"
-	"open-mihomo-gateway/internal/mihomo"
-	"open-mihomo-gateway/internal/pf"
-	"open-mihomo-gateway/internal/runtime"
-	"open-mihomo-gateway/internal/sysctl"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/dhcp"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/pf"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/sysctl"
 )
 
 type Status struct {

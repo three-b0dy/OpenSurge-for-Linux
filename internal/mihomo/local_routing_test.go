@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"open-mihomo-gateway/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 )
 
 func TestRenderConfigAddsLocalRoutingBeforeImportedAndDeviceRules(t *testing.T) {

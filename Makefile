@@ -16,7 +16,7 @@ test:
 	go test ./...
 
 build:
-	go build -o bin/omg ./cmd/omg
+	go build -o bin/opensurge ./cmd/opensurge
 
 web-install:
 	cd web && pnpm install
@@ -54,10 +54,10 @@ gui-notarize:
 	./scripts/notarize-gui-installer.sh "$(PKG)"
 
 doctor:
-	go run ./cmd/omg doctor --config examples/config.example.yaml
+	go run ./cmd/opensurge doctor --config examples/config.example.yaml
 
 status:
-	go run ./cmd/omg status --config examples/config.example.yaml
+	go run ./cmd/opensurge status --config examples/config.example.yaml
 
 policy-control-test:
 	./tests/integration/policy-control.sh

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"open-mihomo-gateway/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 )
 
 func TestValidateRejectsMihomoRedirPort(t *testing.T) {

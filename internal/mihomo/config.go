@@ -5,7 +5,7 @@ import (
 	"strings"
 	"text/template"
 
-	"open-mihomo-gateway/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 )
 
 const configTemplate = `mixed-port: {{ .MixedPort }}

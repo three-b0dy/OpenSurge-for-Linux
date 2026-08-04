@@ -5,7 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"open-mihomo-gateway/internal/process"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 )
 
 const keyIPForwarding = "net.inet.ip.forwarding"

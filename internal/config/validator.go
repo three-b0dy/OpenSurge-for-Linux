@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"open-mihomo-gateway/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 )
 
 func Validate(cfg Config) error {

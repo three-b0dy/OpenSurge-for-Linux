@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"open-mihomo-gateway/internal/config"
-	"open-mihomo-gateway/internal/device"
-	"open-mihomo-gateway/internal/runtime"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
 func TestStartRollsBackWhenMihomoStartFails(t *testing.T) {

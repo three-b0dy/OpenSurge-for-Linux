@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"open-mihomo-gateway/internal/macosnetwork"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/macosnetwork"
 )
 
 var (

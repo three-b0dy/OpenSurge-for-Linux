@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"open-mihomo-gateway/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 )
 
 // Prepare creates the root-owned applied configuration tree used by the
