@@ -73,6 +73,8 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace ubuntu:24.04 \
             bash -euc '
               export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends adduser
               OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 tests/packages/install-deb.sh "$PACKAGE" --installer-fixture
             '
 

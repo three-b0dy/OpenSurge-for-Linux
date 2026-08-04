@@ -40,8 +40,10 @@ grep -F 'chmod 0755 release-assets/opensurge-install' "$release" >/dev/null
 grep -F 'sha256sum opensurge-install opensurge_*.deb | LC_ALL=C sort -k2,2 > SHA256SUMS' "$release" >/dev/null
 grep -F 'release-assets/opensurge-install release-assets/opensurge_*.deb release-assets/SHA256SUMS' "$release" >/dev/null
 grep -F 'OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 tests/packages/install-deb.sh "$PACKAGE" --installer-fixture' "$release" >/dev/null
-if grep -E 'apt-get install -y.*(dnsmasq|nftables|iproute2|ca-certificates|systemd)' "$release"; then
-	echo "release package test must not preinstall installer-owned host dependencies" >&2
+grep -F 'apt-get install -y --no-install-recommends adduser' "$release" >/dev/null
+release_apt_install_lines=$(grep -E '^[[:space:]]*apt-get install ' "$release" || true)
+if test "$release_apt_install_lines" != '              apt-get install -y --no-install-recommends adduser'; then
+	echo "release package test must install only the adduser bootstrap prerequisite" >&2
 	exit 1
 fi
 test ! -e "$repo_root/.github/workflows/release-unsigned.yml"
