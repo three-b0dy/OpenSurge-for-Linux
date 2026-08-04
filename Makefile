@@ -1,6 +1,6 @@
 .PHONY: test build doctor status policy-control-test
 .PHONY: web-install web-build web-test control-build control-run
-.PHONY: linux-lab-test linux-lab-test-tun linux-real-device-smoke
+.PHONY: linux-lab-test linux-lab-test-tun linux-real-device-smoke systemd-unit-test
 
 test:
 	go test ./...
@@ -45,3 +45,6 @@ linux-real-device-smoke:
 	else \
 		bash tests/linux-real-device/smoke.sh --help; \
 	fi
+
+systemd-unit-test:
+	bash tests/systemd/units_test.sh

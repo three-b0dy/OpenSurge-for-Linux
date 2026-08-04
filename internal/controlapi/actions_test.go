@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -59,6 +62,34 @@ func TestSameWiFiConfirmationIsRecordedWithoutNetworkMutation(t *testing.T) {
 	}
 	if response := performAuthorized(server, "POST", "/api/v1/network/apply-static", nil); response.Code != 404 {
 		t.Fatalf("retired network mutation status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestSystemdSocketActivationUsesPassedListener(t *testing.T) {
+	path := filepath.Join(os.TempDir(), "opensurge-gateway-test-"+strconv.Itoa(os.Getpid())+".sock")
+	_ = os.Remove(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
+	base, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	file, err := base.(*net.UnixListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	listener, activated, err := listenerFromSystemdFile(path, strconv.Itoa(os.Getpid()), "1", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activated {
+		t.Fatal("systemd listener was not recognized")
+	}
+	defer listener.Close()
+	if listener.Addr().String() != path {
+		t.Fatalf("listener address = %q, want %q", listener.Addr(), path)
 	}
 }
 

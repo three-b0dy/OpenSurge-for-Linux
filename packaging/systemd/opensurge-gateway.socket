@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenSurge privileged gateway socket
+PartOf=opensurge-gateway.service
+
+[Socket]
+ListenStream=/run/opensurge/gateway.sock
+SocketUser=root
+SocketGroup=opensurge
+SocketMode=0660
+DirectoryMode=0755
+Service=opensurge-gateway.service
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

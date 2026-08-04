@@ -144,21 +144,69 @@ func (c UnixGatewayClient) call(ctx context.Context, request HelperRequest) (Hel
 	return response, nil
 }
 
+func listenerFromSystemdFile(socketPath, listenPID, listenFDS string, file *os.File) (net.Listener, bool, error) {
+	if listenPID == "" && listenFDS == "" {
+		return nil, false, nil
+	}
+	if listenPID != strconv.Itoa(os.Getpid()) {
+		return nil, false, fmt.Errorf("systemd socket activation has unexpected LISTEN_PID")
+	}
+	count, err := strconv.Atoi(listenFDS)
+	if err != nil || count != 1 {
+		return nil, false, fmt.Errorf("systemd socket activation requires exactly one listener")
+	}
+	if file == nil {
+		return nil, false, fmt.Errorf("systemd socket activation listener is unavailable")
+	}
+	listener, err := net.FileListener(file)
+	if err != nil {
+		return nil, false, fmt.Errorf("open systemd gateway listener: %w", err)
+	}
+	unixAddr, ok := listener.Addr().(*net.UnixAddr)
+	if !ok || unixAddr.Name != socketPath {
+		_ = listener.Close()
+		return nil, false, fmt.Errorf("systemd listener is not %s", socketPath)
+	}
+	return listener, true, nil
+}
+
+func systemdGatewayListener(socketPath string) (net.Listener, bool, error) {
+	listenPID := os.Getenv("LISTEN_PID")
+	listenFDS := os.Getenv("LISTEN_FDS")
+	if listenPID == "" && listenFDS == "" {
+		return nil, false, nil
+	}
+	file := os.NewFile(uintptr(3), "opensurge-gateway.socket")
+	if file == nil {
+		return nil, false, fmt.Errorf("systemd socket activation listener is unavailable")
+	}
+	defer file.Close()
+	return listenerFromSystemdFile(socketPath, listenPID, listenFDS, file)
+}
+
 func ServeGateway(ctx context.Context, socketPath, allowedRoot, socketGroup string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("opensurge-gateway must run as root")
 	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
-		return err
-	}
-	_ = os.Remove(socketPath)
-	listener, err := net.Listen("unix", socketPath)
+	listener, activated, err := systemdGatewayListener(socketPath)
 	if err != nil {
 		return err
 	}
+	if !activated {
+		if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+			return err
+		}
+		_ = os.Remove(socketPath)
+		listener, err = net.Listen("unix", socketPath)
+		if err != nil {
+			return err
+		}
+	}
 	defer listener.Close()
-	defer os.Remove(socketPath)
-	if socketGroup != "" {
+	if !activated {
+		defer os.Remove(socketPath)
+	}
+	if !activated && socketGroup != "" {
 		group, err := user.LookupGroup(socketGroup)
 		if err != nil {
 			return fmt.Errorf("lookup gateway socket group: %w", err)

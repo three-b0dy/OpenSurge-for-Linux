@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenSurge LAN control API
+Requires=opensurge-gateway.socket
+After=network-online.target opensurge-gateway.socket
+Wants=network-online.target
+RequiresMountsFor=/etc/opensurge /var/lib/opensurge /run/opensurge
+
+[Service]
+Type=simple
+User=opensurge
+Group=opensurge
+ExecStart=/usr/lib/opensurge/opensurge-control --config /etc/opensurge/config.yaml --gateway-socket /run/opensurge/gateway.sock
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
