@@ -36,9 +36,13 @@ func RenderRuleset(cfg config.Config) (string, error) {
 	}
 
 	var rules strings.Builder
+	fmt.Fprintf(&rules, "destroy table inet %s\n\n", table)
 	fmt.Fprintf(&rules, "table inet %s {\n", table)
 	rules.WriteString("  chain forward {\n")
 	rules.WriteString("    type filter hook forward priority filter; policy accept;\n")
+	if cfg.Gateway.Mode == config.GatewayModeIsolatedLAN {
+		fmt.Fprintf(&rules, "    iifname %q ip6 saddr ::/0 jump isolated_ipv6_forward\n", interfaceName)
+	}
 	rules.WriteString("    ct state established,related accept\n")
 	fmt.Fprintf(&rules, "    iifname %q udp dport { 53, 67 } accept\n", interfaceName)
 	fmt.Fprintf(&rules, "    iifname %q tcp dport 53 accept\n", interfaceName)
@@ -58,8 +62,7 @@ func RenderRuleset(cfg config.Config) (string, error) {
 
 	if cfg.Gateway.Mode == config.GatewayModeIsolatedLAN {
 		fmt.Fprintf(&rules, "  chain isolated_ipv6_forward {\n")
-		rules.WriteString("    type filter hook forward priority filter; policy accept;\n")
-		fmt.Fprintf(&rules, "    iifname %q ip6 saddr ::/0 drop\n", interfaceName)
+		rules.WriteString("    drop\n")
 		rules.WriteString("  }\n\n")
 	}
 
