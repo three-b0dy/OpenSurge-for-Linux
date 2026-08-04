@@ -20,19 +20,6 @@ func TestValidateRejectsMihomoRedirPort(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsPFRedirectTCPTo(t *testing.T) {
-	cfg := Default()
-	cfg.PF.RedirectTCPTo = 7892
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatalf("Validate() succeeded with unsupported pf.redirect_tcp_to")
-	}
-	if !strings.Contains(err.Error(), `use transparent.mode: "tun"`) {
-		t.Fatalf("Validate() error = %q", err)
-	}
-}
-
 func TestValidateAcceptsTUNTransparentMode(t *testing.T) {
 	cfg := Default()
 	cfg.Transparent.Mode = TransparentModeTUN
@@ -42,18 +29,30 @@ func TestValidateAcceptsTUNTransparentMode(t *testing.T) {
 	}
 }
 
-func TestValidateLocalSystemProxyRequiresTUN(t *testing.T) {
+func TestValidateLinuxTUNRequiresAutoRedirect(t *testing.T) {
 	cfg := Default()
-	cfg.LocalSystemProxy.Enabled = true
-
-	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), `requires transparent.mode: "tun"`) {
+	cfg.Transparent.Mode = TransparentModeTUN
+	cfg.Transparent.TUNAutoRedirect = false
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "transparent.tun_auto_redirect") {
 		t.Fatalf("Validate() error = %v", err)
 	}
+}
 
-	cfg.Transparent.Mode = TransparentModeTUN
-	if err := Validate(cfg); err != nil {
-		t.Fatalf("Validate() with TUN error = %v", err)
+func TestValidateRejectsInvalidManagementListen(t *testing.T) {
+	for _, value := range []string{"127.0.0.1:61767", "0.0.0.0:61767", "::1:61767", "192.168.50.1"} {
+		cfg := Default()
+		cfg.Management.Listen = value
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "management.listen") {
+			t.Fatalf("Validate(%q) error = %v", value, err)
+		}
+	}
+}
+
+func TestValidateRejectsWhitespaceInTUNDevice(t *testing.T) {
+	cfg := Default()
+	cfg.Transparent.TUNDevice = "opensurge tun"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "transparent.tun_device") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

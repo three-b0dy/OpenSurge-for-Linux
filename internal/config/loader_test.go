@@ -13,8 +13,11 @@ func TestLoadExampleConfig(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	if cfg.Gateway.Interface != "en0" {
+	if cfg.Gateway.Interface != "lan0" {
 		t.Fatalf("Gateway.Interface = %q", cfg.Gateway.Interface)
+	}
+	if cfg.Gateway.UpstreamInterface != "wan0" {
+		t.Fatalf("Gateway.UpstreamInterface = %q", cfg.Gateway.UpstreamInterface)
 	}
 	if cfg.Gateway.Mode != GatewayModeIsolatedLAN {
 		t.Fatalf("Gateway.Mode = %q", cfg.Gateway.Mode)
@@ -40,17 +43,33 @@ func TestLoadExampleConfig(t *testing.T) {
 	if cfg.Transparent.Mode != TransparentModeOff {
 		t.Fatalf("Transparent.Mode = %q", cfg.Transparent.Mode)
 	}
-	if cfg.Transparent.TUNDevice != "utun123" {
+	if cfg.Transparent.TUNDevice != "opensurge-tun" {
 		t.Fatalf("Transparent.TUNDevice = %q", cfg.Transparent.TUNDevice)
 	}
-	if cfg.LocalSystemProxy.Enabled {
-		t.Fatalf("LocalSystemProxy.Enabled = true")
+	if !cfg.Transparent.TUNAutoRedirect {
+		t.Fatalf("Transparent.TUNAutoRedirect = false")
+	}
+	if cfg.Management.Listen != "192.168.50.1:61767" {
+		t.Fatalf("Management.Listen = %q", cfg.Management.Listen)
+	}
+	if cfg.Nftables.Table != "opensurge" {
+		t.Fatalf("Nftables.Table = %q", cfg.Nftables.Table)
 	}
 	if cfg.UpstreamProxy.Enabled {
 		t.Fatalf("UpstreamProxy.Enabled = true")
 	}
 	if cfg.UpstreamProxy.MatchDomain != "example.com" {
 		t.Fatalf("UpstreamProxy.MatchDomain = %q", cfg.UpstreamProxy.MatchDomain)
+	}
+}
+
+func TestLoadRejectsRemovedPlatformFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("pf:\n  anchor_name: legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown config key pf.anchor_name") {
+		t.Fatalf("Load() error = %v", err)
 	}
 }
 

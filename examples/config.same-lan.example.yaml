@@ -1,8 +1,9 @@
 gateway:
   mode: "same_lan"
-  interface: "en0"
+  interface: "lan0"
   lan_ip: "192.168.1.20"
-  upstream_interface: "en0"
+  upstream_interface: "lan0"
+  router_dhcp_disabled_confirmed: true
 
 dhcp:
   binary: "./runtime/tools/bin/dnsmasq"
@@ -17,6 +18,14 @@ dns:
   port: 53
   upstream: "127.0.0.1#1053"
 
+management:
+  listen: "192.168.1.20:61767"
+  tls_cert_file: ""
+  tls_key_file: ""
+
+nftables:
+  table: "opensurge"
+
 mihomo:
   binary: "./runtime/tools/bin/mihomo"
   config: "./runtime/same-lan/mihomo.yaml"
@@ -27,20 +36,14 @@ mihomo:
   api_addr: "127.0.0.1:19090"
   secret: ""
 
-pf:
-  anchor_name: "com.apple/open_mihomo_gateway_same_lan"
-  redirect_tcp_to: 0
-
 transparent:
   mode: "tun"
-  tun_device: "utun123"
+  tun_device: "opensurge-tun"
   tun_stack: "mixed"
   tun_auto_route: true
+  tun_auto_redirect: true
   tun_auto_detect_interface: false
   tun_strict_route: false
-
-local_system_proxy:
-  enabled: false
 
 upstream_proxy:
   enabled: false

@@ -39,6 +39,23 @@ func TestDefaultConfigPath(t *testing.T) {
 	}
 }
 
+func TestConfigValidateCommand(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	output := captureStdout(t, func() {
+		code = run([]string{"config", "validate", "--config", configPath})
+	})
+	if code != 0 {
+		t.Fatalf("run() exit = %d, output = %q", code, output)
+	}
+	if !strings.Contains(output, "configuration valid") {
+		t.Fatalf("output = %q", output)
+	}
+}
+
 func TestRenderMihomoCommandPrintsOverlayConfig(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.yaml")

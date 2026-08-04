@@ -15,6 +15,7 @@ func Render(cfg Config) string {
   interface: %s
   lan_ip: %s
   upstream_interface: %s
+  router_dhcp_disabled_confirmed: %t
 
 dhcp:
   binary: %s
@@ -33,6 +34,11 @@ dns:
   port: %d
   upstream: %s
 
+management:
+  listen: %s
+  tls_cert_file: %s
+  tls_key_file: %s
+
 mihomo:
   binary: %s
   config: %s
@@ -43,20 +49,17 @@ mihomo:
   api_addr: %s
   secret: %s
 
-pf:
-  anchor_name: %s
-  redirect_tcp_to: %d
+nftables:
+  table: %s
 
 transparent:
   mode: %s
   tun_device: %s
   tun_stack: %s
   tun_auto_route: %t
+  tun_auto_redirect: %t
   tun_auto_detect_interface: %t
   tun_strict_route: %t
-
-local_system_proxy:
-  enabled: %t
 
 upstream_proxy:
   enabled: %t
@@ -71,14 +74,14 @@ upstream_proxy:
 runtime:
   dir: %s
 `,
-		q(cfg.Gateway.Mode), q(cfg.Gateway.Interface), q(cfg.Gateway.LANIP), q(cfg.Gateway.UpstreamInterface),
+		q(cfg.Gateway.Mode), q(cfg.Gateway.Interface), q(cfg.Gateway.LANIP), q(cfg.Gateway.UpstreamInterface), cfg.Gateway.RouterDHCPDisabledConfirmed,
 		q(cfg.DHCP.Binary), cfg.DHCP.Enabled, q(cfg.DHCP.RangeStart), q(cfg.DHCP.RangeEnd), q(cfg.DHCP.LeaseTime), q(cfg.DHCP.Domain),
 		q(cfg.DevicePolicy.File), q(strings.Join(cfg.DevicePolicy.ProtectedIPv4, ",")),
 		q(cfg.DNS.Listen), cfg.DNS.Port, q(cfg.DNS.Upstream),
+		q(cfg.Management.Listen), q(cfg.Management.TLSCertFile), q(cfg.Management.TLSKeyFile),
 		q(cfg.Mihomo.Binary), q(cfg.Mihomo.Config), q(cfg.Mihomo.ProfileMode), q(cfg.Mihomo.Profile), cfg.Mihomo.MixedPort, cfg.Mihomo.RedirPort, q(cfg.Mihomo.APIAddr), q(cfg.Mihomo.Secret),
-		q(cfg.PF.AnchorName), cfg.PF.RedirectTCPTo,
-		q(cfg.Transparent.Mode), q(cfg.Transparent.TUNDevice), q(cfg.Transparent.TUNStack), cfg.Transparent.TUNAutoRoute, cfg.Transparent.TUNAutoDetectInterface, cfg.Transparent.TUNStrictRoute,
-		cfg.LocalSystemProxy.Enabled,
+		q(cfg.Nftables.Table),
+		q(cfg.Transparent.Mode), q(cfg.Transparent.TUNDevice), q(cfg.Transparent.TUNStack), cfg.Transparent.TUNAutoRoute, cfg.Transparent.TUNAutoRedirect, cfg.Transparent.TUNAutoDetectInterface, cfg.Transparent.TUNStrictRoute,
 		cfg.UpstreamProxy.Enabled, q(cfg.UpstreamProxy.Name), q(cfg.UpstreamProxy.Type), q(cfg.UpstreamProxy.Server), cfg.UpstreamProxy.Port, q(cfg.UpstreamProxy.Username), q(cfg.UpstreamProxy.Password), q(cfg.UpstreamProxy.MatchDomain),
 		q(cfg.Runtime.Dir),
 	)

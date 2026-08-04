@@ -164,14 +164,6 @@ func (m Manager) Start(ctx context.Context) error {
 	if err := m.checkReservationConflicts(deps); err != nil {
 		return err
 	}
-	var systemProxySnapshot *runtime.SystemProxySnapshot
-	if m.cfg.LocalSystemProxy.Enabled {
-		snapshot, err := systemProxyManager.Prepare(ctx, m.cfg.Gateway.UpstreamInterface, m.cfg.Mihomo.MixedPort)
-		if err != nil {
-			return fmt.Errorf("prepare local system proxy coordination: %w", err)
-		}
-		systemProxySnapshot = &snapshot
-	}
 	if err := mihomoManager.WriteConfig(); err != nil {
 		return err
 	}
@@ -210,7 +202,6 @@ func (m Manager) Start(ctx context.Context) error {
 		IPForwardingBefore: ipForwardingBefore,
 		PFEnabledBefore:    pfEnabledBefore,
 		ProfileDigest:      profileDigest,
-		LocalSystemProxy:   systemProxySnapshot,
 	}
 	if bundle := m.cfg.DevicePolicy.Bundle; bundle != nil {
 		state.DevicePolicyDigest = bundle.Digest
@@ -251,7 +242,7 @@ func (m Manager) Start(ctx context.Context) error {
 		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager, systemProxyManager, false)
 	}
 	if !loaded {
-		return m.rollback(ctx, fmt.Errorf("pf anchor %s did not become visible after load", m.cfg.PF.AnchorName), state, dhcpManager, mihomoManager, pfManager, sysctlManager, systemProxyManager, false)
+		return m.rollback(ctx, fmt.Errorf("pf anchor %s did not become visible after load", pf.DefaultAnchorName), state, dhcpManager, mihomoManager, pfManager, sysctlManager, systemProxyManager, false)
 	}
 	if err := deps.saveState(m.paths.StateFile, state); err != nil {
 		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager, systemProxyManager, false)
@@ -269,7 +260,7 @@ func (m Manager) Start(ctx context.Context) error {
 	if pid > 0 {
 		fmt.Printf("dnsmasq started with pid %d\n", pid)
 	}
-	fmt.Printf("pf anchor %s loaded\n", m.cfg.PF.AnchorName)
+	fmt.Printf("pf anchor %s loaded\n", pf.DefaultAnchorName)
 	if state.LocalSystemProxy != nil {
 		fmt.Printf("macOS HTTP/HTTPS system proxy enabled for network service %s\n", state.LocalSystemProxy.NetworkService)
 	}

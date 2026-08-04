@@ -19,7 +19,7 @@ func TestRenderConfig(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"interface=en0",
+		"interface=lan0",
 		"dhcp-range=192.168.50.100,192.168.50.200,12h",
 		"dhcp-option=option:router,192.168.50.1",
 		"port=53",
@@ -104,7 +104,7 @@ func TestRenderConfigSameLANDNSOnly(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"interface=en0",
+		"interface=lan0",
 		"port=53",
 		"listen-address=192.168.50.1",
 		"server=127.0.0.1#1053",

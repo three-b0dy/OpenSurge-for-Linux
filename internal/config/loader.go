@@ -119,6 +119,12 @@ func applyValue(cfg *Config, section, key, value string) error {
 		cfg.Gateway.LANIP = value
 	case "gateway.upstream_interface":
 		cfg.Gateway.UpstreamInterface = value
+	case "gateway.router_dhcp_disabled_confirmed":
+		confirmed, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("gateway.router_dhcp_disabled_confirmed must be a boolean")
+		}
+		cfg.Gateway.RouterDHCPDisabledConfirmed = confirmed
 	case "dhcp.binary":
 		cfg.DHCP.Binary = value
 	case "dhcp.enabled":
@@ -149,6 +155,12 @@ func applyValue(cfg *Config, section, key, value string) error {
 		cfg.DNS.Port = port
 	case "dns.upstream":
 		cfg.DNS.Upstream = value
+	case "management.listen":
+		cfg.Management.Listen = value
+	case "management.tls_cert_file":
+		cfg.Management.TLSCertFile = value
+	case "management.tls_key_file":
+		cfg.Management.TLSKeyFile = value
 	case "mihomo.binary":
 		cfg.Mihomo.Binary = value
 	case "mihomo.config":
@@ -173,14 +185,8 @@ func applyValue(cfg *Config, section, key, value string) error {
 		cfg.Mihomo.APIAddr = value
 	case "mihomo.secret":
 		cfg.Mihomo.Secret = value
-	case "pf.anchor_name":
-		cfg.PF.AnchorName = value
-	case "pf.redirect_tcp_to":
-		port, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("pf.redirect_tcp_to must be a number")
-		}
-		cfg.PF.RedirectTCPTo = port
+	case "nftables.table":
+		cfg.Nftables.Table = value
 	case "transparent.mode":
 		cfg.Transparent.Mode = strings.ToLower(value)
 	case "transparent.tun_device":
@@ -193,6 +199,12 @@ func applyValue(cfg *Config, section, key, value string) error {
 			return fmt.Errorf("transparent.tun_auto_route must be a boolean")
 		}
 		cfg.Transparent.TUNAutoRoute = enabled
+	case "transparent.tun_auto_redirect":
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("transparent.tun_auto_redirect must be a boolean")
+		}
+		cfg.Transparent.TUNAutoRedirect = enabled
 	case "transparent.tun_auto_detect_interface":
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {
@@ -205,12 +217,6 @@ func applyValue(cfg *Config, section, key, value string) error {
 			return fmt.Errorf("transparent.tun_strict_route must be a boolean")
 		}
 		cfg.Transparent.TUNStrictRoute = enabled
-	case "local_system_proxy.enabled":
-		enabled, err := strconv.ParseBool(value)
-		if err != nil {
-			return fmt.Errorf("local_system_proxy.enabled must be a boolean")
-		}
-		cfg.LocalSystemProxy.Enabled = enabled
 	case "upstream_proxy.enabled":
 		enabled, err := strconv.ParseBool(value)
 		if err != nil {

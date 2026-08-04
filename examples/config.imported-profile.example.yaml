@@ -1,7 +1,9 @@
 gateway:
-  interface: "en0"
+  mode: "isolated_lan"
+  interface: "lan0"
   lan_ip: "192.168.50.1"
-  upstream_interface: "en0"
+  upstream_interface: "wan0"
+  router_dhcp_disabled_confirmed: false
 
 dhcp:
   binary: "dnsmasq"
@@ -22,6 +24,14 @@ dns:
   # OpenSurge owns DNS even in imported mode so fake-IP and TUN stay aligned.
   upstream: "127.0.0.1#1053"
 
+management:
+  listen: "192.168.50.1:61767"
+  tls_cert_file: ""
+  tls_key_file: ""
+
+nftables:
+  table: "opensurge"
+
 mihomo:
   binary: "./bin/mihomo"
   config: "./runtime/mihomo.yaml"
@@ -32,20 +42,14 @@ mihomo:
   api_addr: "127.0.0.1:9090"
   secret: ""
 
-pf:
-  anchor_name: "com.apple/open_mihomo_gateway"
-  redirect_tcp_to: 0
-
 transparent:
   mode: "off"
-  tun_device: "utun123"
+  tun_device: "opensurge-tun"
   tun_stack: "mixed"
   tun_auto_route: true
+  tun_auto_redirect: true
   tun_auto_detect_interface: false
   tun_strict_route: false
-
-local_system_proxy:
-  enabled: false
 
 runtime:
   dir: "./runtime"

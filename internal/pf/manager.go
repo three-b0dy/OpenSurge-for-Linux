@@ -16,6 +16,8 @@ type Manager struct {
 	paths runtime.Paths
 }
 
+const DefaultAnchorName = "opensurge"
+
 func New(cfg config.Config, paths runtime.Paths) Manager {
 	return Manager{cfg: cfg, paths: paths}
 }
@@ -44,7 +46,7 @@ func (m Manager) Enabled() (bool, error) {
 }
 
 func (m Manager) Load(enablePF bool) error {
-	if err := runPF("pfctl", "-a", m.cfg.PF.AnchorName, "-f", m.paths.PFAnchor); err != nil {
+	if err := runPF("pfctl", "-a", DefaultAnchorName, "-f", m.paths.PFAnchor); err != nil {
 		return err
 	}
 	if enablePF {
@@ -57,7 +59,7 @@ func (m Manager) Load(enablePF bool) error {
 }
 
 func (m Manager) Unload(disablePF bool) error {
-	err := runPF("pfctl", "-a", m.cfg.PF.AnchorName, "-F", "all")
+	err := runPF("pfctl", "-a", DefaultAnchorName, "-F", "all")
 	if disablePF {
 		if disableErr := runPF("pfctl", "-d"); err == nil {
 			err = disableErr
@@ -67,7 +69,7 @@ func (m Manager) Unload(disablePF bool) error {
 }
 
 func (m Manager) Loaded() (bool, error) {
-	anchorName := strings.TrimSpace(m.cfg.PF.AnchorName)
+	anchorName := strings.TrimSpace(DefaultAnchorName)
 	if anchorName == "" {
 		return false, nil
 	}

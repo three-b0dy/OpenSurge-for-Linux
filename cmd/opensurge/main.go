@@ -54,6 +54,15 @@ func run(args []string) int {
 	}
 
 	command := args[0]
+	flagArgs := args[1:]
+	if command == "config" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "config requires a subcommand")
+			return 2
+		}
+		command = "config " + args[1]
+		flagArgs = args[2:]
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	configPath := fs.String("config", defaultConfigPath, "path to gateway config")
@@ -65,7 +74,7 @@ func run(args []string) int {
 	deviceSlot := fs.String("slot", "default", "device policy slot: default or a rule id")
 	providerName := fs.String("provider", "", "mihomo proxy provider name")
 	logTail := fs.Int("tail", 0, "number of recent log lines to include")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
 	jsonOutput, err := parseOutputFormat(*outputFormat)
@@ -87,6 +96,11 @@ func run(args []string) int {
 	manager := newGatewayManager(cfg)
 
 	switch command {
+	case "config validate":
+		if jsonOutput {
+			return writeJSONExit(commandResultJSON{Command: command, OK: true, ConfigPath: *configPath})
+		}
+		fmt.Printf("configuration valid: %s\n", *configPath)
 	case "start":
 		if err := manager.Start(ctx); err != nil {
 			return writeErrorExit(command, jsonOutput, 1, "start", err)
@@ -316,7 +330,7 @@ func run(args []string) int {
 
 func commandRequiresDesiredPolicy(command string) bool {
 	switch command {
-	case "start", "reload", "doctor", "render-mihomo", "validate-mihomo":
+	case "start", "reload", "doctor", "render-mihomo", "validate-mihomo", "config validate":
 		return true
 	default:
 		return false
@@ -1079,6 +1093,8 @@ Commands:
            print the final mihomo config without starting services
   validate-mihomo
            render and validate the final mihomo config without starting services
+  config validate
+           validate the OpenSurge configuration without starting services
 
 Default config: %s
 `, defaultConfigPath)

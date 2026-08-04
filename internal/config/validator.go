@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 )
@@ -35,6 +36,12 @@ func validate(cfg Config, checkDevicePolicy bool) error {
 	}
 	if net.ParseIP(cfg.Gateway.LANIP).To4() == nil {
 		return fmt.Errorf("gateway.lan_ip must be a valid IPv4 address")
+	}
+	if err := validateManagement(cfg.Management); err != nil {
+		return err
+	}
+	if !validRuleToken(cfg.Nftables.Table) {
+		return fmt.Errorf("nftables.table must be a non-empty token")
 	}
 	if cfg.DHCP.Enabled {
 		if strings.TrimSpace(cfg.DHCP.Binary) == "" {
@@ -77,7 +84,7 @@ func validate(cfg Config, checkDevicePolicy bool) error {
 		return fmt.Errorf("mihomo.redir_port must be between 0 and 65535")
 	}
 	if cfg.Mihomo.RedirPort != 0 {
-		return fmt.Errorf("mihomo.redir_port is not supported on macOS; use transparent.mode: \"tun\"")
+		return fmt.Errorf("mihomo.redir_port is not supported on Linux; use transparent.mode: \"tun\"")
 	}
 	if strings.TrimSpace(cfg.Mihomo.APIAddr) == "" {
 		return fmt.Errorf("mihomo.api_addr is required")
@@ -85,20 +92,8 @@ func validate(cfg Config, checkDevicePolicy bool) error {
 	if err := validateMihomoProfile(cfg); err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfg.PF.AnchorName) == "" {
-		return fmt.Errorf("pf.anchor_name is required")
-	}
-	if !validOptionalPort(cfg.PF.RedirectTCPTo) {
-		return fmt.Errorf("pf.redirect_tcp_to must be between 0 and 65535")
-	}
-	if cfg.PF.RedirectTCPTo != 0 {
-		return fmt.Errorf("pf.redirect_tcp_to is not supported on macOS; use transparent.mode: \"tun\"")
-	}
 	if err := validateTransparent(cfg.Transparent); err != nil {
 		return err
-	}
-	if cfg.LocalSystemProxy.Enabled && !cfg.Transparent.TUNEnabled() {
-		return fmt.Errorf("local_system_proxy.enabled requires transparent.mode: \"tun\"")
 	}
 	if cfg.Gateway.SameLAN() {
 		if cfg.Transparent.Mode != TransparentModeTUN {
@@ -148,6 +143,29 @@ func validateDNSUpstream(value string) error {
 	port, err := strconv.Atoi(portText)
 	if err != nil || !validPort(port) {
 		return fmt.Errorf("dns.upstream port must be between 1 and 65535")
+	}
+	return nil
+}
+
+func validateManagement(cfg ManagementConfig) error {
+	listen := strings.TrimSpace(cfg.Listen)
+	host, portText, err := net.SplitHostPort(listen)
+	if err != nil || host == "" {
+		return fmt.Errorf("management.listen must be an IPv4 host:port")
+	}
+	ip := net.ParseIP(host).To4()
+	if ip == nil {
+		return fmt.Errorf("management.listen must be an IPv4 host:port")
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("management.listen must not use a wildcard address")
+	}
+	if ip.IsLoopback() {
+		return fmt.Errorf("management.listen must not use a loopback address")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || !validPort(port) {
+		return fmt.Errorf("management.listen port must be between 1 and 65535")
 	}
 	return nil
 }
@@ -258,12 +276,18 @@ func validateMihomoProfile(cfg Config) error {
 }
 
 func validateTransparent(cfg TransparentConfig) error {
+	if strings.IndexFunc(cfg.TUNDevice, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("transparent.tun_device must not contain whitespace")
+	}
 	switch cfg.Mode {
 	case TransparentModeOff:
 		return nil
 	case TransparentModeTUN:
-		if !strings.HasPrefix(cfg.TUNDevice, "utun") {
-			return fmt.Errorf("transparent.tun_device must start with utun on macOS")
+		if strings.TrimSpace(cfg.TUNDevice) == "" {
+			return fmt.Errorf("transparent.tun_device is required")
+		}
+		if !cfg.TUNAutoRedirect {
+			return fmt.Errorf("transparent.tun_auto_redirect must be true when transparent.mode is \"tun\"")
 		}
 		switch cfg.TUNStack {
 		case "system", "gvisor", "mixed":

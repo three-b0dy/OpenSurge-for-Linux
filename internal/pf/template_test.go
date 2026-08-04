@@ -15,7 +15,7 @@ func TestRenderAnchor(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"nat on en0 from 192.168.50.0/24 to any -> (en0)",
+		"nat on wan0 from 192.168.50.0/24 to any -> (wan0)",
 		"pass in all",
 		"pass out all",
 	} {
@@ -25,18 +25,6 @@ func TestRenderAnchor(t *testing.T) {
 	}
 	if strings.Contains(rendered, "rdr pass") {
 		t.Fatalf("rendered anchor enables TCP redirection by default:\n%s", rendered)
-	}
-}
-
-func TestRenderAnchorNeverEmitsTCPRedirect(t *testing.T) {
-	cfg := config.Default()
-	cfg.PF.RedirectTCPTo = 7892
-	rendered, err := RenderAnchor(cfg)
-	if err != nil {
-		t.Fatalf("RenderAnchor() error = %v", err)
-	}
-	if strings.Contains(rendered, "rdr pass") {
-		t.Fatalf("rendered anchor emits unsupported TCP redirection:\n%s", rendered)
 	}
 }
 

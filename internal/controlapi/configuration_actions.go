@@ -241,7 +241,6 @@ func applyControlConfig(configPath, revision string, payload []byte) (string, er
 	cfg.DNS.Upstream = input.DNS.Upstream
 	cfg.Transparent.Mode = input.Transparent.Mode
 	cfg.Transparent.TUNStrictRoute = input.Transparent.StrictRoute
-	cfg.LocalSystemProxy.Enabled = input.LocalSystemProxy.Enabled
 	cfg.DevicePolicy.ProtectedIPv4 = append([]string(nil), input.DevicePolicy.ProtectedIPv4...)
 	createdPolicy := ""
 	if input.DevicePolicy.Enabled && cfg.DevicePolicy.File == "" {

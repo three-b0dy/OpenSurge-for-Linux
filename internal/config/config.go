@@ -9,16 +9,16 @@ import (
 )
 
 type Config struct {
-	Gateway          GatewayConfig
-	DHCP             DHCPConfig
-	DevicePolicy     DevicePolicyConfig
-	DNS              DNSConfig
-	Mihomo           MihomoConfig
-	PF               PFConfig
-	Transparent      TransparentConfig
-	LocalSystemProxy LocalSystemProxyConfig
-	UpstreamProxy    UpstreamProxyConfig
-	Runtime          RuntimeConfig
+	Gateway       GatewayConfig
+	DHCP          DHCPConfig
+	DevicePolicy  DevicePolicyConfig
+	DNS           DNSConfig
+	Management    ManagementConfig
+	Mihomo        MihomoConfig
+	Nftables      NftablesConfig
+	Transparent   TransparentConfig
+	UpstreamProxy UpstreamProxyConfig
+	Runtime       RuntimeConfig
 }
 
 // DevicePolicyConfig points at the optional JSON control-plane file that
@@ -30,10 +30,11 @@ type DevicePolicyConfig struct {
 }
 
 type GatewayConfig struct {
-	Mode              string
-	Interface         string
-	LANIP             string
-	UpstreamInterface string
+	Mode                        string
+	Interface                   string
+	LANIP                       string
+	UpstreamInterface           string
+	RouterDHCPDisabledConfirmed bool
 }
 
 type DHCPConfig struct {
@@ -51,6 +52,12 @@ type DNSConfig struct {
 	Upstream string
 }
 
+type ManagementConfig struct {
+	Listen      string
+	TLSCertFile string
+	TLSKeyFile  string
+}
+
 type MihomoConfig struct {
 	Binary      string
 	Config      string
@@ -62,9 +69,8 @@ type MihomoConfig struct {
 	Secret      string
 }
 
-type PFConfig struct {
-	AnchorName    string
-	RedirectTCPTo int
+type NftablesConfig struct {
+	Table string
 }
 
 const (
@@ -74,8 +80,9 @@ const (
 )
 
 const (
-	TransparentModeOff = "off"
-	TransparentModeTUN = "tun"
+	TransparentModeOff      = "off"
+	TransparentModeTUN      = "tun"
+	defaultManagementListen = "192.168.50.1:61767"
 )
 
 // MihomoDNSUpstream is the dnsmasq upstream that preserves mihomo fake-IP and
@@ -93,15 +100,9 @@ type TransparentConfig struct {
 	TUNDevice              string
 	TUNStack               string
 	TUNAutoRoute           bool
+	TUNAutoRedirect        bool
 	TUNAutoDetectInterface bool
 	TUNStrictRoute         bool
-}
-
-// LocalSystemProxyConfig enables an opt-in compatibility layer for local Mac
-// applications that honor the macOS HTTP/HTTPS proxy settings. The endpoint
-// is derived from Mihomo.MixedPort and is not independently configurable.
-type LocalSystemProxyConfig struct {
-	Enabled bool
 }
 
 func (c TransparentConfig) TUNEnabled() bool {
@@ -131,9 +132,9 @@ func Default() Config {
 	return Config{
 		Gateway: GatewayConfig{
 			Mode:              GatewayModeIsolatedLAN,
-			Interface:         "en0",
+			Interface:         "lan0",
 			LANIP:             "192.168.50.1",
-			UpstreamInterface: "en0",
+			UpstreamInterface: "wan0",
 		},
 		DHCP: DHCPConfig{
 			Binary:     "dnsmasq",
@@ -149,6 +150,11 @@ func Default() Config {
 			Port:     53,
 			Upstream: MihomoDNSUpstream,
 		},
+		Management: ManagementConfig{
+			Listen:      defaultManagementListen,
+			TLSCertFile: "",
+			TLSKeyFile:  "",
+		},
 		Mihomo: MihomoConfig{
 			Binary:      "./bin/mihomo",
 			Config:      "./runtime/mihomo.yaml",
@@ -159,19 +165,18 @@ func Default() Config {
 			APIAddr:     "127.0.0.1:9090",
 			Secret:      "",
 		},
-		PF: PFConfig{
-			AnchorName:    "com.apple/open_mihomo_gateway",
-			RedirectTCPTo: 0,
+		Nftables: NftablesConfig{
+			Table: "opensurge",
 		},
 		Transparent: TransparentConfig{
 			Mode:                   TransparentModeOff,
-			TUNDevice:              "utun123",
+			TUNDevice:              "opensurge-tun",
 			TUNStack:               "mixed",
 			TUNAutoRoute:           true,
+			TUNAutoRedirect:        true,
 			TUNAutoDetectInterface: false,
 			TUNStrictRoute:         false,
 		},
-		LocalSystemProxy: LocalSystemProxyConfig{Enabled: false},
 		UpstreamProxy: UpstreamProxyConfig{
 			Enabled:     false,
 			Name:        "real-device-egress",

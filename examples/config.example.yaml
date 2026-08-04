@@ -1,7 +1,9 @@
 gateway:
-  interface: "en0"
+  mode: "isolated_lan"
+  interface: "lan0"
   lan_ip: "192.168.50.1"
-  upstream_interface: "en0"
+  upstream_interface: "wan0"
+  router_dhcp_disabled_confirmed: false
 
 dhcp:
   binary: "dnsmasq"
@@ -23,6 +25,14 @@ dns:
   # explicit diagnostic resolver; TUN dns-hijack may still capture it.
   upstream: "127.0.0.1#1053"
 
+management:
+  listen: "192.168.50.1:61767"
+  tls_cert_file: ""
+  tls_key_file: ""
+
+nftables:
+  table: "opensurge"
+
 mihomo:
   binary: "./bin/mihomo"
   config: "./runtime/mihomo.yaml"
@@ -32,28 +42,19 @@ mihomo:
   profile_mode: "managed"
   profile: ""
   mixed_port: 7890
-  # macOS transparent proxying uses transparent.mode: "tun"; redir must stay 0.
+  # Linux transparent proxying uses transparent.mode: "tun"; redir must stay 0.
   redir_port: 0
   api_addr: "127.0.0.1:9090"
   secret: ""
 
-pf:
-  anchor_name: "com.apple/open_mihomo_gateway"
-  # PF TCP redirection is not supported on macOS; TUN is the transparent path.
-  redirect_tcp_to: 0
-
 transparent:
   mode: "off"
-  tun_device: "utun123"
+  tun_device: "opensurge-tun"
   tun_stack: "mixed"
   tun_auto_route: true
+  tun_auto_redirect: true
   tun_auto_detect_interface: false
   tun_strict_route: false
-
-local_system_proxy:
-  # Optional compatibility layer for local Mac apps that honor HTTP/HTTPS
-  # system proxies. Requires TUN and follows mihomo.mixed_port.
-  enabled: false
 
 upstream_proxy:
   # Keep disabled for the default DIRECT gateway. Enable for proxy egress smoke.
