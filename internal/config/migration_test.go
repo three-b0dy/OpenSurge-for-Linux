@@ -15,6 +15,21 @@ func TestMigrateMacConfigRemovesPlatformFields(t *testing.T) {
 	}
 }
 
+func TestMigrateMacConfigDefaultsBlankTUNDevice(t *testing.T) {
+	out, _, err := MigrateMacConfig([]byte("transparent:\n  tun_device: \"  \"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated map[string]any
+	if err := yaml.Unmarshal(out, &migrated); err != nil {
+		t.Fatal(err)
+	}
+	transparent := migrated["transparent"].(map[string]any)
+	if transparent["tun_device"] != "opensurge-tun" {
+		t.Fatalf("transparent.tun_device = %#v, want opensurge-tun", transparent["tun_device"])
+	}
+}
+
 func TestMigrateMacConfigPreservesManagedSectionsAndMapsDefaults(t *testing.T) {
 	source := []byte(`gateway:
   mode: "isolated_lan"

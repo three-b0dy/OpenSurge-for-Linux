@@ -68,7 +68,7 @@ func MigrateMacConfig(source []byte) ([]byte, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if device, ok := migrationString(transparent["tun_device"]); !ok || isMacInterface(device) {
+	if device, ok := migrationString(transparent["tun_device"]); !ok || strings.TrimSpace(device) == "" || isMacInterface(device) {
 		transparent["tun_device"] = "opensurge-tun"
 		if ok {
 			notes = append(notes, "map transparent.tun_device from the macOS utun device to opensurge-tun")
