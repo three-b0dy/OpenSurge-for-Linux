@@ -29,10 +29,9 @@ lifecycle and installed systemd units are later-phase work.
 - `config migrate` produces a candidate on stdout and mapping notes on stderr;
   it never writes a file or changes upstream router DHCP.
 
-`internal/pf` is a Phase 2 legacy surface retained temporarily for migration
-compatibility. It is not the Linux product path. Do not extend it or describe
-it as a supported Linux feature; the later Linux gateway lifecycle will remove
-that dependency.
+The legacy PF package has been removed. PF is not a Linux product path and must
+not be reintroduced; Linux gateway lifecycle code operates only the named
+nftables table.
 
 ## Validation
 

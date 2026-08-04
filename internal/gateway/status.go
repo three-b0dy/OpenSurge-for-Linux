@@ -9,7 +9,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/dhcp"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/pf"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/nftables"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/sysctl"
 )
@@ -24,7 +24,7 @@ type Status struct {
 	TUN          string `json:"tun"`
 	TUNInterface string `json:"tun_interface,omitempty"`
 	TUNError     string `json:"tun_error,omitempty"`
-	PFAnchor     string `json:"pf_anchor"`
+	Nftables     string `json:"nftables"`
 	Forwarding   string `json:"forwarding"`
 	ClientCount  int    `json:"client_count"`
 }
@@ -48,7 +48,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 	if m.cfg.Transparent.TUNEnabled() {
 		tunStatus = "stopped"
 	}
-	pfStatus := "unloaded"
+	nftablesStatus := "unloaded"
 	if exists {
 		dhcpRunning := false
 		mihomoRunning := false
@@ -89,10 +89,15 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 		} else {
 			gatewayStatus = "degraded"
 		}
-		if state.NftablesLoaded {
-			pfStatus = "loaded"
-			if loaded, err := pf.New(m.cfg, m.paths).Loaded(); err == nil && !loaded {
-				pfStatus = "unloaded"
+		if state.CleanupRequired {
+			gatewayStatus = "cleanup-required"
+			nftablesStatus = "cleanup-required"
+		} else if state.NftablesLoaded {
+			nftablesStatus = "loaded"
+			if loaded, err := nftables.New(m.cfg, m.paths, nil).Loaded(); err == nil && !loaded {
+				nftablesStatus = "unloaded"
+			} else if err != nil {
+				nftablesStatus = "unknown"
 			}
 		}
 	}
@@ -111,7 +116,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 		TUN:          tunStatus,
 		TUNInterface: tunInterface,
 		TUNError:     tunError,
-		PFAnchor:     pfStatus,
+		Nftables:     nftablesStatus,
 		Forwarding:   forwarding,
 		ClientCount:  len(clients),
 	}, nil
@@ -166,7 +171,7 @@ func (s Status) Format() string {
 		fmt.Sprintf("%s: %s", dnsmasqLabel, s.DHCP),
 		fmt.Sprintf("mihomo: %s", s.Mihomo),
 		fmt.Sprintf("TUN: %s", tunLabel),
-		fmt.Sprintf("pf anchor: %s", s.PFAnchor),
+		fmt.Sprintf("nftables table: %s", s.Nftables),
 		fmt.Sprintf("IP forwarding: %s", s.Forwarding),
 		fmt.Sprintf("Clients: %d", s.ClientCount),
 	}

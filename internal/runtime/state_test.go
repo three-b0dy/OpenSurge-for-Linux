@@ -11,12 +11,11 @@ import (
 func TestSaveAndLoadState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	want := State{
-		PIDDNSMasq:            101,
-		PIDMihomo:             202,
-		IPForwardingBefore:    "0",
-		NftablesLoaded:        true,
-		FirewallEnabledBefore: true,
-		StartedAt:             time.Unix(1_700_000_000, 0).UTC(),
+		PIDDNSMasq:         101,
+		PIDMihomo:          202,
+		IPForwardingBefore: "0",
+		NftablesLoaded:     true,
+		StartedAt:          time.Unix(1_700_000_000, 0).UTC(),
 	}
 
 	if err := SaveState(path, want); err != nil {
@@ -59,7 +58,7 @@ func TestSaveStateReplacesExistingState(t *testing.T) {
 
 func TestStateIgnoresRemovedSystemProxyFieldDuringRoundTrip(t *testing.T) {
 	var state State
-	if err := json.Unmarshal([]byte(`{"nftables_loaded":true,"firewall_enabled_before":false,"local_system_proxy":{"network_service":"Wi-Fi"}}`), &state); err != nil {
+	if err := json.Unmarshal([]byte(`{"nftables_loaded":true,"local_system_proxy":{"network_service":"Wi-Fi"}}`), &state); err != nil {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(state)
@@ -69,21 +68,18 @@ func TestStateIgnoresRemovedSystemProxyFieldDuringRoundTrip(t *testing.T) {
 	if !bytes.Contains(data, []byte(`"nftables_loaded":true`)) {
 		t.Fatalf("state JSON = %s, missing nftables_loaded", data)
 	}
-	if !bytes.Contains(data, []byte(`"firewall_enabled_before":false`)) {
-		t.Fatalf("state JSON = %s, missing firewall_enabled_before", data)
-	}
 	if bytes.Contains(data, []byte("local_system_proxy")) {
 		t.Fatalf("state JSON retained removed platform fields: %s", data)
 	}
 }
 
-func TestStateSerializesFirewallRestoreFlag(t *testing.T) {
-	data, err := json.Marshal(State{FirewallEnabledBefore: true})
+func TestStateDoesNotSerializeRemovedFirewallRestoreFlag(t *testing.T) {
+	data, err := json.Marshal(State{NftablesLoaded: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte(`"firewall_enabled_before":true`)) {
-		t.Fatalf("state JSON = %s, missing firewall_enabled_before", data)
+	if bytes.Contains(data, []byte("firewall_enabled_before")) {
+		t.Fatalf("state JSON retained removed firewall restore state: %s", data)
 	}
 }
 

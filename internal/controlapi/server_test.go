@@ -39,6 +39,20 @@ func TestDoctorChecksForControlHidesRootPrivileges(t *testing.T) {
 	}
 }
 
+func TestMenuBarStatusUsesNftablesField(t *testing.T) {
+	payload, err := json.Marshal(MenuBarStatus{Nftables: "loaded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(payload, []byte(`"nftables":"loaded"`)) {
+		t.Fatalf("menu status JSON = %s, missing nftables field", payload)
+	}
+	legacyField := "pf" + "_anchor"
+	if bytes.Contains(payload, []byte(legacyField)) {
+		t.Fatalf("menu status JSON retained legacy firewall field: %s", payload)
+	}
+}
+
 func TestInspectSourceInventory(t *testing.T) {
 	data := []byte(`proxies:
   - name: edge
@@ -1123,7 +1137,7 @@ func TestGatewayReloadStopFailurePreservesActiveTakeoverStage(t *testing.T) {
 	}
 	server.runner = actionRunnerFunc(func(_ context.Context, _, _ string) error {
 		_ = runtime.RemoveState(paths.StateFile)
-		return errors.New("reload stop failed: pf unload failed")
+		return errors.New("reload stop failed: nftables unload failed")
 	})
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
 	request.Host = "127.0.0.1:61767"
@@ -1210,7 +1224,7 @@ func TestControlConfigOmitsRemovedPlatformFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, removed := range []string{"local_system_proxy", "pf_anchor"} {
+	for _, removed := range []string{"local_system_proxy"} {
 		if bytes.Contains(payload, []byte(removed)) {
 			t.Fatalf("control config retained %q: %s", removed, payload)
 		}

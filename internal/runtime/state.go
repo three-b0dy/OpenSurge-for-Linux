@@ -9,14 +9,15 @@ import (
 )
 
 type State struct {
-	PIDDNSMasq            int       `json:"pid_dnsmasq,omitempty"`
-	PIDMihomo             int       `json:"pid_mihomo,omitempty"`
-	IPForwardingBefore    string    `json:"ip_forwarding_before,omitempty"`
-	NftablesLoaded        bool      `json:"nftables_loaded"`
-	FirewallEnabledBefore bool      `json:"firewall_enabled_before"`
-	DevicePolicyDigest    string    `json:"device_policy_digest,omitempty"`
-	ProfileDigest         string    `json:"profile_digest,omitempty"`
-	StartedAt             time.Time `json:"started_at"`
+	PIDDNSMasq         int       `json:"pid_dnsmasq,omitempty"`
+	PIDMihomo          int       `json:"pid_mihomo,omitempty"`
+	IPForwardingBefore string    `json:"ip_forwarding_before,omitempty"`
+	NftablesLoaded     bool      `json:"nftables_loaded"`
+	CleanupRequired    bool      `json:"cleanup_required,omitempty"`
+	CleanupError       string    `json:"cleanup_error,omitempty"`
+	DevicePolicyDigest string    `json:"device_policy_digest,omitempty"`
+	ProfileDigest      string    `json:"profile_digest,omitempty"`
+	StartedAt          time.Time `json:"started_at"`
 }
 
 func LoadState(path string) (State, bool, error) {

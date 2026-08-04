@@ -14,7 +14,7 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/dhcp"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
-	"github.com/three-b0dy/OpenSurge-for-Linux/internal/pf"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/nftables"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/sysctl"
 )
@@ -46,13 +46,12 @@ type mihomoService interface {
 	Running(int) bool
 }
 
-type pfService interface {
+type nftService interface {
 	Check() error
-	WriteAnchor() error
-	Enabled() (bool, error)
-	Load(bool) error
+	WriteRuleset() error
+	Load() error
 	Loaded() (bool, error)
-	Unload(bool) error
+	Unload() error
 }
 
 type sysctlService interface {
@@ -70,7 +69,7 @@ type gatewayDeps struct {
 	ensure             func(runtime.Paths) error
 	newDHCP            func(config.Config, runtime.Paths) dhcpService
 	newMihomo          func(config.Config, runtime.Paths) mihomoService
-	newPF              func(config.Config, runtime.Paths) pfService
+	newNft             func(config.Config, runtime.Paths) nftService
 	newSysctl          func() sysctlService
 	interfaces         func() ([]net.Interface, error)
 	interfaceByName    func(string) (*net.Interface, error)
@@ -92,8 +91,8 @@ func defaultGatewayDeps() gatewayDeps {
 		newMihomo: func(cfg config.Config, paths runtime.Paths) mihomoService {
 			return mihomo.New(cfg, paths)
 		},
-		newPF: func(cfg config.Config, paths runtime.Paths) pfService {
-			return pf.New(cfg, paths)
+		newNft: func(cfg config.Config, paths runtime.Paths) nftService {
+			return nftables.New(cfg, paths, nil)
 		},
 		newSysctl: func() sysctlService {
 			return sysctl.New()
@@ -137,9 +136,9 @@ func (m Manager) Start(ctx context.Context) error {
 
 	dhcpManager := deps.newDHCP(m.cfg, m.paths)
 	mihomoManager := deps.newMihomo(m.cfg, m.paths)
-	pfManager := deps.newPF(m.cfg, m.paths)
+	nftManager := deps.newNft(m.cfg, m.paths)
 	sysctlManager := deps.newSysctl()
-	if err := m.preflight(dhcpManager, mihomoManager, pfManager, sysctlManager, deps); err != nil {
+	if err := m.preflight(dhcpManager, mihomoManager, nftManager, sysctlManager, deps); err != nil {
 		return err
 	}
 	if err := m.checkReservationConflicts(deps); err != nil {
@@ -151,17 +150,13 @@ func (m Manager) Start(ctx context.Context) error {
 	if err := dhcpManager.WriteConfig(); err != nil {
 		return err
 	}
-	if err := pfManager.WriteAnchor(); err != nil {
+	if err := nftManager.WriteRuleset(); err != nil {
 		return err
 	}
 	if err := mihomoManager.ValidateWrittenConfig(); err != nil {
 		return err
 	}
 	ipForwardingBefore, err := sysctlManager.Current()
-	if err != nil {
-		return err
-	}
-	pfEnabledBefore, err := pfManager.Enabled()
 	if err != nil {
 		return err
 	}
@@ -179,10 +174,9 @@ func (m Manager) Start(ctx context.Context) error {
 	}
 
 	state := runtime.State{
-		StartedAt:             deps.now(),
-		IPForwardingBefore:    ipForwardingBefore,
-		FirewallEnabledBefore: pfEnabledBefore,
-		ProfileDigest:         profileDigest,
+		StartedAt:          deps.now(),
+		IPForwardingBefore: ipForwardingBefore,
+		ProfileDigest:      profileDigest,
 	}
 	if bundle := m.cfg.DevicePolicy.Bundle; bundle != nil {
 		state.DevicePolicyDigest = bundle.Digest
@@ -193,40 +187,44 @@ func (m Manager) Start(ctx context.Context) error {
 	}
 
 	if err := sysctlManager.Enable(); err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, false)
+	}
+	if err := deps.saveState(m.paths.StateFile, state); err != nil {
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, false)
 	}
 
 	mihomoPID, err := mihomoManager.Start()
 	if err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, false)
 	}
 	state.PIDMihomo = mihomoPID
 	if err := deps.saveState(m.paths.StateFile, state); err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, false)
 	}
 
 	pid, err := dhcpManager.Start()
 	if err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, false)
 	}
 	state.PIDDNSMasq = pid
 	if err := deps.saveState(m.paths.StateFile, state); err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, false)
 	}
 
-	if err := pfManager.Load(!pfEnabledBefore); err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+	nftLoadAttempted := true
+	if err := nftManager.Load(); err != nil {
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, nftLoadAttempted)
 	}
 	state.NftablesLoaded = true
-	loaded, err := pfManager.Loaded()
+	if err := deps.saveState(m.paths.StateFile, state); err != nil {
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, nftLoadAttempted)
+	}
+	loaded, err := nftManager.Loaded()
 	if err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, nftManager, sysctlManager, nftLoadAttempted)
 	}
 	if !loaded {
-		return m.rollback(ctx, fmt.Errorf("pf anchor %s did not become visible after load", pf.DefaultAnchorName), state, dhcpManager, mihomoManager, pfManager, sysctlManager)
-	}
-	if err := deps.saveState(m.paths.StateFile, state); err != nil {
-		return m.rollback(ctx, err, state, dhcpManager, mihomoManager, pfManager, sysctlManager)
+		return m.rollback(ctx, fmt.Errorf("nftables table %s did not become visible after load", m.cfg.Nftables.Table), state, dhcpManager, mihomoManager, nftManager, sysctlManager, nftLoadAttempted)
 	}
 
 	fmt.Printf("Gateway runtime prepared in %s\n", m.paths.Dir)
@@ -236,7 +234,7 @@ func (m Manager) Start(ctx context.Context) error {
 	if pid > 0 {
 		fmt.Printf("dnsmasq started with pid %d\n", pid)
 	}
-	fmt.Printf("pf anchor %s loaded\n", pf.DefaultAnchorName)
+	fmt.Printf("nftables table %s loaded\n", m.cfg.Nftables.Table)
 	return nil
 }
 
@@ -272,7 +270,7 @@ func (m Manager) Reload(ctx context.Context) error {
 }
 
 // RestartMihomo rebuilds only the proxy engine process. It deliberately keeps
-// dnsmasq, PF, IPv4 forwarding, and the host network configuration untouched,
+// dnsmasq, nftables, IPv4 forwarding, and the host network configuration untouched,
 // so an upstream link recovery does not turn into a full gateway takeover
 // transition. The existing rendered configuration is validated before the
 // live process is stopped, and the previous log is archived for diagnosis.
@@ -380,9 +378,9 @@ func (m Manager) validateReloadCandidate() error {
 	}
 	dhcpManager := deps.newDHCP(candidate.cfg, candidate.paths)
 	mihomoManager := deps.newMihomo(candidate.cfg, candidate.paths)
-	pfManager := deps.newPF(candidate.cfg, candidate.paths)
+	nftManager := deps.newNft(candidate.cfg, candidate.paths)
 	sysctlManager := deps.newSysctl()
-	if err := candidate.preflight(dhcpManager, mihomoManager, pfManager, sysctlManager, deps); err != nil {
+	if err := candidate.preflight(dhcpManager, mihomoManager, nftManager, sysctlManager, deps); err != nil {
 		return err
 	}
 	if err := candidate.checkReservationConflicts(deps); err != nil {
@@ -394,7 +392,7 @@ func (m Manager) validateReloadCandidate() error {
 	if err := dhcpManager.WriteConfig(); err != nil {
 		return err
 	}
-	if err := pfManager.WriteAnchor(); err != nil {
+	if err := nftManager.WriteRuleset(); err != nil {
 		return err
 	}
 	return mihomoManager.ValidateWrittenConfig()
@@ -410,39 +408,39 @@ func (m Manager) Stop(ctx context.Context) error {
 		return err
 	}
 	var cleanupErr error
-	pfManager := deps.newPF(m.cfg, m.paths)
+	nftManager := deps.newNft(m.cfg, m.paths)
 	sysctlManager := deps.newSysctl()
 	if exists {
 		dhcpManager := deps.newDHCP(m.cfg, m.paths)
+		if state.NftablesLoaded || state.CleanupRequired {
+			cleanupErr = errors.Join(cleanupErr, nftManager.Unload())
+		}
 		cleanupErr = errors.Join(cleanupErr, dhcpManager.Stop(state.PIDDNSMasq))
 		mihomoManager := deps.newMihomo(m.cfg, m.paths)
 		cleanupErr = errors.Join(cleanupErr, mihomoManager.Stop(state.PIDMihomo))
-		if state.NftablesLoaded {
-			cleanupErr = errors.Join(cleanupErr, pfManager.Unload(!state.FirewallEnabledBefore))
-		}
 		cleanupErr = errors.Join(cleanupErr, sysctlManager.Restore(state.IPForwardingBefore))
 	}
 	if cleanupErr != nil {
-		return cleanupErr
+		return m.retainCleanupState(nil, state, cleanupErr, deps)
 	}
 	cleanupErr = errors.Join(cleanupErr, deps.removeState(m.paths.StateFile))
 	cleanupErr = errors.Join(cleanupErr, device.RemovePolicyBundleSnapshot(m.paths.DevicePolicyApplied))
 	if cleanupErr != nil {
-		return cleanupErr
+		return m.retainCleanupState(nil, state, cleanupErr, deps)
 	}
 
 	fmt.Println("Gateway stopped and runtime state cleared.")
 	return nil
 }
 
-func (m Manager) preflight(dhcpManager dhcpService, mihomoManager mihomoService, pfManager pfService, sysctlManager sysctlService, deps gatewayDeps) error {
+func (m Manager) preflight(dhcpManager dhcpService, mihomoManager mihomoService, nftManager nftService, sysctlManager sysctlService, deps gatewayDeps) error {
 	if err := dhcpManager.Check(); err != nil {
 		return err
 	}
 	if err := mihomoManager.Check(); err != nil {
 		return err
 	}
-	if err := pfManager.Check(); err != nil {
+	if err := nftManager.Check(); err != nil {
 		return err
 	}
 	if err := sysctlManager.Check(); err != nil {
@@ -528,22 +526,38 @@ func addrHasIPv4(addr net.Addr, target net.IP) bool {
 	}
 }
 
-func (m Manager) rollback(_ context.Context, cause error, state runtime.State, dhcpManager dhcpService, mihomoManager mihomoService, pfManager pfService, sysctlManager sysctlService) error {
+func (m Manager) rollback(_ context.Context, cause error, state runtime.State, dhcpManager dhcpService, mihomoManager mihomoService, nftManager nftService, sysctlManager sysctlService, nftCleanup bool) error {
 	deps := m.gatewayDeps()
 	var cleanupErr error
+	if nftCleanup {
+		cleanupErr = errors.Join(cleanupErr, nftManager.Unload())
+	}
 	cleanupErr = errors.Join(cleanupErr, dhcpManager.Stop(state.PIDDNSMasq))
 	cleanupErr = errors.Join(cleanupErr, mihomoManager.Stop(state.PIDMihomo))
-	if state.NftablesLoaded {
-		cleanupErr = errors.Join(cleanupErr, pfManager.Unload(!state.FirewallEnabledBefore))
-	}
 	cleanupErr = errors.Join(cleanupErr, sysctlManager.Restore(state.IPForwardingBefore))
 	if cleanupErr != nil {
-		return fmt.Errorf("%w; rollback failed and runtime state was retained for recovery: %v", cause, cleanupErr)
+		return m.retainCleanupState(cause, state, cleanupErr, deps)
 	}
 	cleanupErr = errors.Join(cleanupErr, deps.removeState(m.paths.StateFile))
 	cleanupErr = errors.Join(cleanupErr, device.RemovePolicyBundleSnapshot(m.paths.DevicePolicyApplied))
 	if cleanupErr != nil {
-		return fmt.Errorf("%w; rollback cleanup failed: %v", cause, cleanupErr)
+		return m.retainCleanupState(cause, state, cleanupErr, deps)
 	}
 	return cause
+}
+
+func (m Manager) retainCleanupState(cause error, state runtime.State, cleanupErr error, deps gatewayDeps) error {
+	state.CleanupRequired = true
+	state.CleanupError = cleanupErr.Error()
+	stateSaveErr := deps.saveState(m.paths.StateFile, state)
+	if stateSaveErr != nil {
+		if cause != nil {
+			return fmt.Errorf("%w; cleanup-required: %v; save recovery state: %w", cause, cleanupErr, stateSaveErr)
+		}
+		return fmt.Errorf("cleanup-required: %v; save recovery state: %w", cleanupErr, stateSaveErr)
+	}
+	if cause == nil {
+		return fmt.Errorf("cleanup-required: %v", cleanupErr)
+	}
+	return fmt.Errorf("%w; cleanup-required: %v", cause, cleanupErr)
 }

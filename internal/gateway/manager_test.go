@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestStartRollsBackWhenMihomoStartFails(t *testing.T) {
 
 	dhcpManager := &fakeDHCP{startPID: 111}
 	mihomoManager := &fakeMihomo{startErr: errors.New("mihomo start failed")}
-	pfManager := &fakePF{enabled: false}
+	nftManager := &fakeNft{}
 	sysctlManager := &fakeSysctl{current: "0"}
 
 	manager := Manager{
@@ -44,8 +45,8 @@ func TestStartRollsBackWhenMihomoStartFails(t *testing.T) {
 			newMihomo: func(config.Config, runtime.Paths) mihomoService {
 				return mihomoManager
 			},
-			newPF: func(config.Config, runtime.Paths) pfService {
-				return pfManager
+			newNft: func(config.Config, runtime.Paths) nftService {
+				return nftManager
 			},
 			newSysctl: func() sysctlService {
 				return sysctlManager
@@ -88,16 +89,118 @@ func TestStartRollsBackWhenMihomoStartFails(t *testing.T) {
 	if !mihomoManager.stopCalled {
 		t.Fatalf("mihomo Stop() was not called during rollback")
 	}
-	if pfManager.loadCalled {
-		t.Fatalf("pf Load() was called before mihomo succeeded")
+	if nftManager.loadCalled {
+		t.Fatalf("nftables Load() was called before mihomo succeeded")
 	}
-	if pfManager.unloadCalled {
-		t.Fatalf("pf Unload() was called even though anchor was not loaded")
+	if nftManager.unloadCalled {
+		t.Fatalf("nftables Unload() was called before nftables load was attempted")
 	}
 	if _, exists, err := runtime.LoadState(paths.StateFile); err != nil {
 		t.Fatalf("LoadState() error = %v", err)
 	} else if exists {
 		t.Fatalf("runtime state still exists after rollback")
+	}
+}
+
+func TestStartLoadsNftablesAfterMihomoAndDNSMasq(t *testing.T) {
+	cfg := config.Default()
+	cfg.Gateway.Interface = "lan0"
+	cfg.Gateway.UpstreamInterface = "wan0"
+	cfg.Runtime.Dir = t.TempDir()
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	paths := runtime.NewPaths(cfg)
+	events := []string{}
+	dhcpManager := &fakeDHCP{startPID: 11, events: &events}
+	mihomoManager := &fakeMihomo{startPID: 22, events: &events}
+	nftManager := &fakeNft{loaded: true, events: &events}
+	sysctlManager := &fakeSysctl{current: "0", events: &events}
+	manager := newLifecycleTestManager(cfg, paths, &events, dhcpManager, mihomoManager, nftManager, sysctlManager)
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	want := []string{"forwarding-on", "mihomo-start", "mihomo-ready", "dnsmasq-start", "nft-load"}
+	if got := lifecycleEvents(events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycle events = %#v, want %#v", got, want)
+	}
+}
+
+func TestNftablesLoadFailureRollsBackOpenSurgeResources(t *testing.T) {
+	cfg := config.Default()
+	cfg.Gateway.Interface = "lan0"
+	cfg.Gateway.UpstreamInterface = "wan0"
+	cfg.Runtime.Dir = t.TempDir()
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	paths := runtime.NewPaths(cfg)
+	events := []string{}
+	dhcpManager := &fakeDHCP{startPID: 11, events: &events}
+	mihomoManager := &fakeMihomo{startPID: 22, events: &events}
+	nftManager := &fakeNft{loadErr: errors.New("nft load failed"), events: &events}
+	sysctlManager := &fakeSysctl{current: "0", events: &events}
+	manager := newLifecycleTestManager(cfg, paths, &events, dhcpManager, mihomoManager, nftManager, sysctlManager)
+
+	err := manager.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "nft load failed") {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !nftManager.unloadCalled || !dhcpManager.stopCalled || !mihomoManager.stopCalled || sysctlManager.restoreValue != "0" {
+		t.Fatalf("rollback calls nft-unload=%v dnsmasq-stop=%v mihomo-stop=%v forwarding-restore=%q", nftManager.unloadCalled, dhcpManager.stopCalled, mihomoManager.stopCalled, sysctlManager.restoreValue)
+	}
+	if _, exists, loadErr := runtime.LoadState(paths.StateFile); loadErr != nil || exists {
+		t.Fatalf("runtime state after successful rollback exists=%v err=%v", exists, loadErr)
+	}
+}
+
+func TestNftablesCleanupFailureRetainsRecoveryState(t *testing.T) {
+	cfg := config.Default()
+	cfg.Gateway.Interface = "lan0"
+	cfg.Gateway.UpstreamInterface = "wan0"
+	cfg.Runtime.Dir = t.TempDir()
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	paths := runtime.NewPaths(cfg)
+	nftManager := &fakeNft{
+		loadErr:   errors.New("nft load failed"),
+		unloadErr: errors.New("cannot delete opensurge table"),
+	}
+	manager := newLifecycleTestManager(cfg, paths, nil, &fakeDHCP{startPID: 11}, &fakeMihomo{startPID: 22}, nftManager, &fakeSysctl{current: "0"})
+
+	err := manager.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cleanup-required") {
+		t.Fatalf("Start() error = %v, want cleanup-required recovery error", err)
+	}
+	state, exists, loadErr := runtime.LoadState(paths.StateFile)
+	if loadErr != nil || !exists {
+		t.Fatalf("recovery state exists=%v err=%v", exists, loadErr)
+	}
+	if !state.CleanupRequired || !strings.Contains(state.CleanupError, "cannot delete opensurge table") {
+		t.Fatalf("recovery state = %#v", state)
+	}
+}
+
+func TestStopUnloadsNftablesBeforeServices(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Dir = t.TempDir()
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	paths := runtime.NewPaths(cfg)
+	if err := runtime.Ensure(paths); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDDNSMasq: 11, PIDMihomo: 22, NftablesLoaded: true, IPForwardingBefore: "0", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	dhcpManager := &fakeDHCP{events: &events}
+	mihomoManager := &fakeMihomo{events: &events}
+	nftManager := &fakeNft{events: &events}
+	sysctlManager := &fakeSysctl{events: &events}
+	manager := newLifecycleTestManager(cfg, paths, &events, dhcpManager, mihomoManager, nftManager, sysctlManager)
+
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	want := []string{"nft-unload", "dnsmasq-stop", "mihomo-stop", "forwarding-restore"}
+	if got := lifecycleEvents(events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("stop events = %#v, want %#v", got, want)
 	}
 }
 
@@ -107,7 +210,7 @@ func TestPreflightRejectsSameGatewayAndUpstreamInterface(t *testing.T) {
 	cfg.Gateway.UpstreamInterface = " en0 "
 	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: defaultGatewayDeps()}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakePF{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err == nil {
 		t.Fatalf("preflight() succeeded")
 	}
@@ -143,7 +246,7 @@ func TestPreflightAcceptsSameInterfaceInSameLANMode(t *testing.T) {
 		},
 	}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakePF{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err != nil {
 		t.Fatalf("preflight() error = %v", err)
 	}
@@ -178,7 +281,7 @@ func TestPreflightAcceptsSameInterfaceInSameWiFiDHCPMode(t *testing.T) {
 		},
 	}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakePF{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err != nil {
 		t.Fatalf("preflight() error = %v", err)
 	}
@@ -193,7 +296,7 @@ func TestPreflightRejectsDifferentInterfacesInSameLANMode(t *testing.T) {
 	cfg.Transparent.Mode = config.TransparentModeTUN
 	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: defaultGatewayDeps()}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakePF{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err == nil {
 		t.Fatalf("preflight() succeeded")
 	}
@@ -234,7 +337,7 @@ func TestPreflightRejectsLANIPOnAnotherInterface(t *testing.T) {
 		},
 	}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakePF{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err == nil {
 		t.Fatalf("preflight() succeeded")
 	}
@@ -287,7 +390,7 @@ func TestStartValidatesMihomoBeforeEnablingForwarding(t *testing.T) {
 			ensure:      runtime.Ensure,
 			newDHCP:     func(config.Config, runtime.Paths) dhcpService { return &fakeDHCP{} },
 			newMihomo:   func(config.Config, runtime.Paths) mihomoService { return mihomoManager },
-			newPF:       func(config.Config, runtime.Paths) pfService { return &fakePF{} },
+			newNft:      func(config.Config, runtime.Paths) nftService { return &fakeNft{} },
 			newSysctl:   func() sysctlService { return sysctlManager },
 			interfaces:  func() ([]net.Interface, error) { return []net.Interface{{Name: "lan0"}, {Name: "wan0"}}, nil },
 			interfaceByName: func(name string) (*net.Interface, error) {
@@ -335,7 +438,7 @@ func TestReloadValidationFailureLeavesRunningGatewayUntouched(t *testing.T) {
 			removeState: runtime.RemoveState, ensure: runtime.Ensure,
 			newDHCP:         func(config.Config, runtime.Paths) dhcpService { return dhcpManager },
 			newMihomo:       func(config.Config, runtime.Paths) mihomoService { return mihomoManager },
-			newPF:           func(config.Config, runtime.Paths) pfService { return &fakePF{} },
+			newNft:          func(config.Config, runtime.Paths) nftService { return &fakeNft{} },
 			newSysctl:       func() sysctlService { return &fakeSysctl{} },
 			interfaces:      func() ([]net.Interface, error) { return []net.Interface{{Name: "lan0"}, {Name: "wan0"}}, nil },
 			interfaceByName: func(name string) (*net.Interface, error) { return &net.Interface{Name: name}, nil },
@@ -388,7 +491,7 @@ func TestReloadStopsBeforeRestartAndWritesFreshState(t *testing.T) {
 		removeState: runtime.RemoveState, ensure: runtime.Ensure,
 		newDHCP:   func(config.Config, runtime.Paths) dhcpService { return dhcpManager },
 		newMihomo: func(config.Config, runtime.Paths) mihomoService { return mihomoManager },
-		newPF:     func(config.Config, runtime.Paths) pfService { return &fakePF{loaded: true} },
+		newNft:    func(config.Config, runtime.Paths) nftService { return &fakeNft{loaded: true} },
 		newSysctl: func() sysctlService { return &fakeSysctl{current: "0"} },
 		interfaces: func() ([]net.Interface, error) {
 			return []net.Interface{{Name: "lan0"}, {Name: "wan0"}}, nil
@@ -407,7 +510,7 @@ func TestReloadStopsBeforeRestartAndWritesFreshState(t *testing.T) {
 	}
 	stopIndex, startIndex := -1, -1
 	for index, event := range events {
-		if event == "dhcp-stop" && stopIndex == -1 {
+		if event == "dnsmasq-stop" && stopIndex == -1 {
 			stopIndex = index
 		}
 		if event == "mihomo-start" && startIndex == -1 {
@@ -603,71 +706,23 @@ func TestStopFailureRetainsRuntimeStateForRetryAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := Manager{cfg: cfg, paths: paths, deps: gatewayDeps{
-		geteuid: func() int { return 0 }, loadState: runtime.LoadState, removeState: runtime.RemoveState,
+		geteuid: func() int { return 0 }, loadState: runtime.LoadState, saveState: runtime.SaveState, removeState: runtime.RemoveState,
 		newDHCP: func(config.Config, runtime.Paths) dhcpService {
 			return &fakeDHCP{stopErr: errors.New("dnsmasq did not stop")}
 		},
 		newMihomo: func(config.Config, runtime.Paths) mihomoService { return &fakeMihomo{} },
-		newPF:     func(config.Config, runtime.Paths) pfService { return &fakePF{} },
+		newNft:    func(config.Config, runtime.Paths) nftService { return &fakeNft{} },
 		newSysctl: func() sysctlService { return &fakeSysctl{} },
 	}}
 	if err := manager.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "dnsmasq did not stop") {
 		t.Fatalf("Stop() error=%v", err)
 	}
-	if _, exists, err := runtime.LoadState(paths.StateFile); err != nil || !exists {
+	state, exists, err := runtime.LoadState(paths.StateFile)
+	if err != nil || !exists {
 		t.Fatalf("runtime state exists=%v err=%v", exists, err)
 	}
-}
-
-func TestStopRestoresFirewallEnableState(t *testing.T) {
-	cfg := config.Default()
-	cfg.Runtime.Dir = t.TempDir()
-	paths := runtime.NewPaths(cfg)
-	if err := runtime.Ensure(paths); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.SaveState(paths.StateFile, runtime.State{PIDDNSMasq: 11, PIDMihomo: 12, NftablesLoaded: true, FirewallEnabledBefore: false, StartedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	dhcpManager := &fakeDHCP{}
-	mihomoManager := &fakeMihomo{}
-	pfManager := &fakePF{}
-	manager := Manager{cfg: cfg, paths: paths, deps: gatewayDeps{
-		geteuid:   func() int { return 0 },
-		loadState: runtime.LoadState, removeState: runtime.RemoveState,
-		newDHCP:   func(config.Config, runtime.Paths) dhcpService { return dhcpManager },
-		newMihomo: func(config.Config, runtime.Paths) mihomoService { return mihomoManager },
-		newPF:     func(config.Config, runtime.Paths) pfService { return pfManager },
-		newSysctl: func() sysctlService { return &fakeSysctl{} },
-	}}
-
-	if err := manager.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !pfManager.unloadCalled || !pfManager.unloadDisable {
-		t.Fatalf("PF Unload(disable) called=%v disable=%v, want true", pfManager.unloadCalled, pfManager.unloadDisable)
-	}
-	if _, exists, err := runtime.LoadState(paths.StateFile); err != nil || exists {
-		t.Fatalf("runtime state exists=%v err=%v", exists, err)
-	}
-}
-
-func TestRollbackRestoresFirewallEnableState(t *testing.T) {
-	cfg := config.Default()
-	cfg.Runtime.Dir = t.TempDir()
-	pfManager := &fakePF{}
-	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: gatewayDeps{
-		geteuid:     func() int { return 0 },
-		removeState: func(string) error { return nil },
-	}}
-	state := runtime.State{NftablesLoaded: true, FirewallEnabledBefore: false}
-
-	err := manager.rollback(context.Background(), errors.New("start failed"), state, &fakeDHCP{}, &fakeMihomo{}, pfManager, &fakeSysctl{})
-	if err == nil || !strings.Contains(err.Error(), "start failed") {
-		t.Fatalf("rollback() error=%v", err)
-	}
-	if !pfManager.unloadCalled || !pfManager.unloadDisable {
-		t.Fatalf("PF Unload(disable) called=%v disable=%v, want true", pfManager.unloadCalled, pfManager.unloadDisable)
+	if !state.CleanupRequired {
+		t.Fatalf("runtime state = %#v, want cleanup-required recovery state", state)
 	}
 }
 
@@ -689,7 +744,7 @@ func (f *fakeDHCP) Check() error {
 
 func (f *fakeDHCP) WriteConfig() error {
 	if f.events != nil {
-		*f.events = append(*f.events, "dhcp-write")
+		*f.events = append(*f.events, "dnsmasq-write")
 	}
 	return f.writeErr
 }
@@ -697,7 +752,7 @@ func (f *fakeDHCP) WriteConfig() error {
 func (f *fakeDHCP) Start() (int, error) {
 	f.startCalled = true
 	if f.events != nil {
-		*f.events = append(*f.events, "dhcp-start")
+		*f.events = append(*f.events, "dnsmasq-start")
 	}
 	return f.startPID, f.startErr
 }
@@ -705,7 +760,7 @@ func (f *fakeDHCP) Start() (int, error) {
 func (f *fakeDHCP) Stop(int) error {
 	f.stopCalled = true
 	if f.events != nil {
-		*f.events = append(*f.events, "dhcp-stop")
+		*f.events = append(*f.events, "dnsmasq-stop")
 	}
 	return f.stopErr
 }
@@ -748,6 +803,7 @@ func (f *fakeMihomo) Start() (int, error) {
 	f.startCalled = true
 	if f.events != nil {
 		*f.events = append(*f.events, "mihomo-start")
+		*f.events = append(*f.events, "mihomo-ready")
 	}
 	return f.startPID, f.startErr
 }
@@ -763,48 +819,46 @@ func (f *fakeMihomo) Stop(pid int) error {
 
 func (f *fakeMihomo) Running(int) bool { return f.running }
 
-type fakePF struct {
-	checkErr      error
-	writeErr      error
-	enabled       bool
-	enabledErr    error
-	loadErr       error
-	loaded        bool
-	loadedErr     error
-	unloadErr     error
-	loadCalled    bool
-	unloadCalled  bool
-	unloadDisable bool
-	events        *[]string
+type fakeNft struct {
+	checkErr     error
+	writeErr     error
+	loadErr      error
+	loaded       bool
+	loadedErr    error
+	unloadErr    error
+	loadCalled   bool
+	unloadCalled bool
+	events       *[]string
 }
 
-func (f *fakePF) Check() error {
+func (f *fakeNft) Check() error {
 	return f.checkErr
 }
 
-func (f *fakePF) WriteAnchor() error {
+func (f *fakeNft) WriteRuleset() error {
+	if f.events != nil {
+		*f.events = append(*f.events, "nft-write")
+	}
 	return f.writeErr
 }
 
-func (f *fakePF) Enabled() (bool, error) {
-	return f.enabled, f.enabledErr
-}
-
-func (f *fakePF) Load(bool) error {
+func (f *fakeNft) Load() error {
 	f.loadCalled = true
 	if f.events != nil {
-		*f.events = append(*f.events, "pf-load")
+		*f.events = append(*f.events, "nft-load")
 	}
 	return f.loadErr
 }
 
-func (f *fakePF) Loaded() (bool, error) {
+func (f *fakeNft) Loaded() (bool, error) {
 	return f.loaded, f.loadedErr
 }
 
-func (f *fakePF) Unload(disable bool) error {
+func (f *fakeNft) Unload() error {
 	f.unloadCalled = true
-	f.unloadDisable = disable
+	if f.events != nil {
+		*f.events = append(*f.events, "nft-unload")
+	}
 	return f.unloadErr
 }
 
@@ -816,6 +870,7 @@ type fakeSysctl struct {
 	restoreErr   error
 	enableCalled bool
 	restoreValue string
+	events       *[]string
 }
 
 func (f *fakeSysctl) Check() error {
@@ -828,12 +883,66 @@ func (f *fakeSysctl) Current() (string, error) {
 
 func (f *fakeSysctl) Enable() error {
 	f.enableCalled = true
+	if f.events != nil {
+		*f.events = append(*f.events, "forwarding-on")
+	}
 	return f.enableErr
 }
 
 func (f *fakeSysctl) Restore(value string) error {
 	f.restoreValue = value
+	if f.events != nil {
+		*f.events = append(*f.events, "forwarding-restore")
+	}
 	return f.restoreErr
+}
+
+func newLifecycleTestManager(cfg config.Config, paths runtime.Paths, _ *[]string, dhcpManager *fakeDHCP, mihomoManager *fakeMihomo, nftManager *fakeNft, sysctlManager *fakeSysctl) Manager {
+	return Manager{cfg: cfg, paths: paths, deps: gatewayDeps{
+		geteuid:     func() int { return 0 },
+		loadState:   runtime.LoadState,
+		saveState:   runtime.SaveState,
+		removeState: runtime.RemoveState,
+		ensure:      runtime.Ensure,
+		newDHCP:     func(config.Config, runtime.Paths) dhcpService { return dhcpManager },
+		newMihomo:   func(config.Config, runtime.Paths) mihomoService { return mihomoManager },
+		newNft:      func(config.Config, runtime.Paths) nftService { return nftManager },
+		newSysctl:   func() sysctlService { return sysctlManager },
+		interfaces: func() ([]net.Interface, error) {
+			return []net.Interface{{Name: cfg.Gateway.Interface}, {Name: cfg.Gateway.UpstreamInterface}}, nil
+		},
+		interfaceByName: func(name string) (*net.Interface, error) {
+			return &net.Interface{Name: name}, nil
+		},
+		interfaceAddrs: func(iface *net.Interface) ([]net.Addr, error) {
+			if iface.Name != cfg.Gateway.Interface {
+				return nil, nil
+			}
+			return []net.Addr{&net.IPNet{IP: net.ParseIP(cfg.Gateway.LANIP), Mask: net.CIDRMask(24, 32)}}, nil
+		},
+		now: time.Now,
+	}}
+}
+
+func lifecycleEvents(events []string) []string {
+	allowed := map[string]bool{
+		"forwarding-on":      true,
+		"mihomo-start":       true,
+		"mihomo-ready":       true,
+		"dnsmasq-start":      true,
+		"nft-load":           true,
+		"nft-unload":         true,
+		"dnsmasq-stop":       true,
+		"mihomo-stop":        true,
+		"forwarding-restore": true,
+	}
+	filtered := make([]string, 0, len(events))
+	for _, event := range events {
+		if allowed[event] {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
 }
 
 func indexOfEvent(events []string, target string) int {

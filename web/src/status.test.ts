@@ -5,6 +5,7 @@ describe('status labels', () => {
   it('does not confuse an unreachable control service with a stopped gateway', () => {
     expect(statusLabel()).toBe('无法连接')
     expect(statusLabel('stopped')).toBe('已停止')
+    expect(statusLabel('cleanup-required')).toBe('需要清理')
   })
 
   it('keeps the dangerous stopped recovery stage explicit', () => {

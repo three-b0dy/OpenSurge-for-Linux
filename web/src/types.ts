@@ -8,7 +8,7 @@ export type GatewayStatus = {
   tun?: string
   tun_interface?: string
   tun_error?: string
-  pf_anchor: string
+  nftables: string
   forwarding: string
   client_count: number
 }

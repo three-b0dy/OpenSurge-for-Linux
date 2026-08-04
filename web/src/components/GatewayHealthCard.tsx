@@ -18,7 +18,7 @@ export function GatewayHealthCard({ overview }: { overview: Overview | null }) {
       <ServiceState label={status?.dhcp_enabled === false ? 'DNS' : 'DHCP / DNS'} state={status?.dhcp} />
       <ServiceState label="mihomo" state={status?.mihomo} />
       <ServiceState label={status?.tun_interface ? `TUN · ${status.tun_interface}` : 'TUN'} state={status?.tun} />
-      <ServiceState label="防火墙表" state={status?.pf_anchor} />
+      <ServiceState label="nftables table" state={status?.nftables} />
       <ServiceState label="IPv4 转发" state={status?.forwarding} />
     </div>
   </article>

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,38 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
+
+func TestStatusReportsCleanupRequiredRuntime(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Dir = t.TempDir()
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	paths := runtime.NewPaths(cfg)
+	if err := runtime.Ensure(paths); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.SaveState(paths.StateFile, runtime.State{CleanupRequired: true, CleanupError: "nftables table cleanup failed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := New(cfg).Status(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Gateway != "cleanup-required" || status.Nftables != "cleanup-required" {
+		t.Fatalf("status = %#v, want cleanup-required", status)
+	}
+	if !strings.Contains(status.Format(), "nftables table: cleanup-required") {
+		t.Fatalf("status format = %q", status.Format())
+	}
+	payload, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyField := "pf" + "_anchor"
+	if bytes.Contains(payload, []byte(legacyField)) {
+		t.Fatalf("status JSON retained legacy firewall field: %s", payload)
+	}
+}
 
 func TestStatusFormatLabelsDNSOnlyMode(t *testing.T) {
 	status := Status{

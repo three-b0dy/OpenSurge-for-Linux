@@ -1,6 +1,7 @@
 export function statusLabel(status?: string) {
   return status === 'running' ? '正在运行'
     : status === 'degraded' ? '运行异常'
+      : status === 'cleanup-required' ? '需要清理'
       : status === 'stopped' ? '已停止'
         : '无法连接'
 }

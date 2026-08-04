@@ -84,7 +84,7 @@ const overview: Overview = {
   warnings: [],
   status: {
     gateway: 'stopped', interface: 'en0', lan_ip: '192.168.1.20', dhcp: 'stopped',
-    dhcp_enabled: true, mihomo: 'stopped', pf_anchor: 'unloaded', forwarding: 'disabled', client_count: 0,
+    dhcp_enabled: true, mihomo: 'stopped', nftables: 'unloaded', forwarding: 'disabled', client_count: 0,
   },
   doctor: [], doctor_healthy: true, leases: [], policies: [],
   providers: { proxy_providers: [], rule_providers: [] },
@@ -741,7 +741,7 @@ describe('OpenSurge app shell', () => {
   })
 
   it('confirms and applies a source through a running gateway reload', async () => {
-    vi.mocked(api.overview).mockResolvedValue({ ...overview, drift: true, status: { ...overview.status, gateway: 'running', dhcp: 'running', mihomo: 'running', pf_anchor: 'loaded', forwarding: 'enabled' } })
+    vi.mocked(api.overview).mockResolvedValue({ ...overview, drift: true, status: { ...overview.status, gateway: 'running', dhcp: 'running', mihomo: 'running', nftables: 'loaded', forwarding: 'enabled' } })
     const source: Source = {
       id: 'home', name: 'Home', kind: 'mihomo_profile', origin: 'file:home.yaml', digest: 'next', size: 100,
       valid: true, validation: 'valid', desired: false, applied: false, versions: [], imported_at: '2026-07-15T00:00:00Z',

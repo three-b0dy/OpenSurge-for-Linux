@@ -54,7 +54,7 @@ type MenuBarStatus struct {
 	TUN           string   `json:"tun"`
 	TUNInterface  string   `json:"tun_interface,omitempty"`
 	TUNError      string   `json:"tun_error,omitempty"`
-	PFAnchor      string   `json:"pf_anchor"`
+	Nftables      string   `json:"nftables"`
 	Forwarding    string   `json:"forwarding"`
 	ClientCount   int      `json:"client_count"`
 	Drift         bool     `json:"drift"`
