@@ -40,6 +40,12 @@ go run ./cmd/opensurge doctor --config examples/config.example.yaml
 默认配置路径是 `/etc/opensurge/config.yaml`。默认运行数据目录为
 `/var/lib/opensurge`，运行时 socket 方向为 `/run/opensurge`。
 
+## 上游镜像
+
+`upstream` 分支由 GitHub Actions 每日同步，也可通过手动 workflow
+dispatch 触发。同步使用受保护的精确 ref lease，只更新 `upstream`，不会
+改写 Linux 分支，也不会发布 release。
+
 ## 开发验证
 
 ```sh

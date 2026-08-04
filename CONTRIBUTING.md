@@ -10,6 +10,13 @@ Thanks for helping build a Linux gateway and control plane.
 - Update user or agent documentation when a durable behavior or validation
   boundary changes.
 
+## Upstream mirror
+
+The `upstream` branch is a direct mirror maintained by the scheduled or manually
+dispatched GitHub Actions workflow. It is updated with an exact-ref lease and is
+the only branch that workflow may write; Linux branches are never rewritten and
+the workflow does not publish releases.
+
 ## Verification
 
 Run at least:

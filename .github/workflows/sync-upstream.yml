@@ -1,0 +1,51 @@
+name: Sync upstream mirror
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror upstream master to upstream
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository refs
+        uses: actions/checkout@v4
+        with:
+          ref: upstream
+          fetch-depth: 0
+
+      - name: Update upstream mirror ref
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin refs/heads/upstream:refs/remotes/origin/upstream
+          old_sha="$(git rev-parse --verify refs/remotes/origin/upstream)"
+
+          git remote add upstream-source https://github.com/YTwsy/OpenSurge-for-Mac.git
+          git fetch --no-tags upstream-source master:refs/remotes/upstream-source/master
+          new_sha="$(git rev-parse --verify refs/remotes/upstream-source/master)"
+
+          {
+            echo "### Upstream mirror"
+            echo "- Previous SHA: \`$old_sha\`"
+            echo "- Candidate SHA: \`$new_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$old_sha" == "$new_sha" ]]; then
+            echo "upstream is already current"
+            exit 0
+          fi
+
+          git push --force-with-lease=upstream:$old_sha \
+            origin refs/remotes/upstream-source/master:refs/heads/upstream
+          echo "- Updated SHA: \`$new_sha\`" >> "$GITHUB_STEP_SUMMARY"
