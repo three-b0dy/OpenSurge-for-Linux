@@ -54,6 +54,34 @@ func TestValidateConfigWithTimeoutReportsSlowEngine(t *testing.T) {
 	}
 }
 
+func TestValidateWrittenConfigRunsMihomoAgainstRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "mihomo")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Mihomo.Binary = binary
+	cfg.Runtime.Dir = filepath.Join(dir, "runtime")
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	manager := New(cfg, runtime.NewPaths(cfg))
+
+	if err := manager.ValidateWrittenConfig(); err != nil {
+		t.Fatalf("ValidateWrittenConfig() error = %v", err)
+	}
+	argsData, err := os.ReadFile(binary + ".args")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsData)), "\n")
+	want := []string{"-d", cfg.Runtime.Dir, "-t", "-f", cfg.Mihomo.Config}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("mihomo args = %#v, want %#v", args, want)
+	}
+}
+
 func TestWaitForTUNWaitsForEnabledRuntimeState(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -279,6 +279,112 @@ func TestRenderConfigWithTUN(t *testing.T) {
 	}
 }
 
+func TestRenderTUNEnablesLinuxAutoRedirect(t *testing.T) {
+	cfg := config.Default()
+	cfg.Gateway.LANIP = "10.77.42.1"
+	cfg.Gateway.UpstreamInterface = "eno2"
+	cfg.Transparent.Mode = config.TransparentModeTUN
+	cfg.Transparent.TUNDevice = "opensurge-test-tun"
+
+	rendered, err := RenderConfig(cfg)
+	if err != nil {
+		t.Fatalf("RenderConfig() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"interface-name: eno2",
+		"external-controller: 127.0.0.1:9090",
+		"tun:",
+		"  enable: true",
+		"  device: opensurge-test-tun",
+		"  stack: mixed",
+		"  auto-route: true",
+		"  auto-redirect: true",
+		"  auto-detect-interface: false",
+		"    - any:53",
+		"    - tcp://any:53",
+		"    - 10.77.42.0/24",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered config missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestImportedProfileCannotOverrideAutoRedirect(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "profile.yaml")
+	body := `allow-lan: false
+bind-address: 127.0.0.1
+external-controller: 0.0.0.0:9999
+tun:
+  enable: false
+  device: imported-tun
+  stack: gvisor
+  auto-route: false
+  auto-redirect: false
+  auto-detect-interface: true
+  interface-name: imported-interface
+  dns-hijack:
+    - 127.0.0.1:53
+  route-exclude-address:
+    - 0.0.0.0/0
+rules:
+  - MATCH,DIRECT
+`
+	if err := os.WriteFile(profilePath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Gateway.LANIP = "10.88.9.1"
+	cfg.Gateway.UpstreamInterface = "enp5s0"
+	cfg.Mihomo.ProfileMode = config.MihomoProfileModeImported
+	cfg.Mihomo.Profile = profilePath
+	cfg.Transparent.Mode = config.TransparentModeTUN
+
+	rendered, err := RenderConfig(cfg)
+	if err != nil {
+		t.Fatalf("RenderConfig() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"allow-lan: true",
+		"bind-address: \"*\"",
+		"external-controller: 127.0.0.1:9090",
+		"interface-name: enp5s0",
+		"  enable: true",
+		"  device: opensurge-tun",
+		"  stack: mixed",
+		"  auto-route: true",
+		"  auto-redirect: true",
+		"  auto-detect-interface: false",
+		"    - any:53",
+		"    - tcp://any:53",
+		"    - 10.88.9.0/24",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered config missing %q:\n%s", want, rendered)
+		}
+	}
+	for _, notWant := range []string{
+		"allow-lan: false",
+		"external-controller: 0.0.0.0:9999",
+		"device: imported-tun",
+		"stack: gvisor",
+		"auto-route: false",
+		"auto-redirect: false",
+		"auto-detect-interface: true",
+		"interface-name: imported-interface",
+		"    - 127.0.0.1:53",
+		"    - 0.0.0.0/0",
+	} {
+		if strings.Contains(rendered, notWant) {
+			t.Fatalf("rendered config kept profile-owned value %q:\n%s", notWant, rendered)
+		}
+	}
+}
+
 func TestRenderConfigWithDevicePolicyOverlayPreservesImportedRuleOrder(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.yaml")

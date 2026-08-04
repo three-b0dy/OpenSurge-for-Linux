@@ -48,10 +48,12 @@ tun:
   stack: {{ .TUNStack }}
   device: {{ .TUNDevice }}
   auto-route: {{ .TUNAutoRoute }}
+  auto-redirect: {{ .TUNAutoRedirect }}
   auto-detect-interface: {{ .TUNAutoDetectInterface }}
   strict-route: {{ .TUNStrictRoute }}
   dns-hijack:
     - any:53
+    - tcp://any:53
   route-exclude-address:
     - {{ .LANPrefix }}
     - 127.0.0.0/8
@@ -87,6 +89,7 @@ type templateData struct {
 	TUNDevice              string
 	TUNStack               string
 	TUNAutoRoute           bool
+	TUNAutoRedirect        bool
 	TUNAutoDetectInterface bool
 	TUNStrictRoute         bool
 	UpstreamInterface      string
@@ -122,6 +125,7 @@ func newTemplateData(cfg config.Config) (templateData, error) {
 		TUNDevice:              transparent.TUNDevice,
 		TUNStack:               transparent.TUNStack,
 		TUNAutoRoute:           transparent.TUNAutoRoute,
+		TUNAutoRedirect:        transparent.TUNAutoRedirect,
 		TUNAutoDetectInterface: transparent.TUNAutoDetectInterface,
 		TUNStrictRoute:         transparent.TUNStrictRoute,
 		UpstreamInterface:      cfg.Gateway.UpstreamInterface,
