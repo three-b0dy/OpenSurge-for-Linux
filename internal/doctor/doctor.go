@@ -10,6 +10,7 @@ import (
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/nftables"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
@@ -31,7 +32,8 @@ func Run(cfg config.Config) Report {
 		checkPath("dnsmasq", cfg.DHCP.Binary),
 		checkPath("mihomo", cfg.Mihomo.Binary),
 		checkMihomoConfigRender(cfg),
-		checkCommand("pfctl", "pfctl"),
+		checkCommand("nft", "nft"),
+		checkNftablesRulesRender(cfg),
 		checkInterface(cfg.Gateway.Interface),
 		checkInterface(cfg.Gateway.UpstreamInterface),
 		checkGatewayInterfaceTopology(cfg.Gateway),
@@ -39,6 +41,13 @@ func Run(cfg config.Config) Report {
 		checkInterfaceIPv4(cfg.Gateway.Interface, cfg.Gateway.LANIP),
 	}
 	return Report{Checks: checks}
+}
+
+func checkNftablesRulesRender(cfg config.Config) Check {
+	if _, err := nftables.RenderRuleset(cfg); err != nil {
+		return Check{Name: "nftables rules validation", OK: false, Message: err.Error()}
+	}
+	return Check{Name: "nftables rules validation", OK: true}
 }
 
 func checkMihomoConfigRender(cfg config.Config) Check {

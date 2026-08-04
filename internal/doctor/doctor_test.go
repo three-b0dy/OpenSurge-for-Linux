@@ -61,6 +61,23 @@ func TestCheckInterfaceIPv4RejectsInvalidIP(t *testing.T) {
 	}
 }
 
+func TestCheckNftablesRulesRender(t *testing.T) {
+	cfg := config.Default()
+	check := checkNftablesRulesRender(cfg)
+	if !check.OK {
+		t.Fatalf("checkNftablesRulesRender() OK = false: %s", check.Message)
+	}
+
+	cfg.Nftables.Table = "invalid table"
+	check = checkNftablesRulesRender(cfg)
+	if check.OK {
+		t.Fatal("checkNftablesRulesRender() OK = true for invalid table name")
+	}
+	if !strings.Contains(check.Message, "table") {
+		t.Fatalf("checkNftablesRulesRender() message = %q", check.Message)
+	}
+}
+
 func TestCheckMihomoConfigRenderAcceptsImportedProfile(t *testing.T) {
 	useRenderOnlyValidation(t)
 	dir := t.TempDir()
