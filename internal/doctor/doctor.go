@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -9,8 +10,11 @@ import (
 	"strings"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/gateway"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/nftables"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 )
 
@@ -27,6 +31,9 @@ type Report struct {
 var validateMihomoConfig = validateMihomoConfigWithEngine
 
 func Run(cfg config.Config) Report {
+	commandRunner := process.NewRunner()
+	ctx, cancel := context.WithTimeout(context.Background(), process.DefaultCommandTimeout)
+	defer cancel()
 	checks := []Check{
 		checkRoot(),
 		checkPath("dnsmasq", cfg.DHCP.Binary),
@@ -36,11 +43,30 @@ func Run(cfg config.Config) Report {
 		checkNftablesRulesRender(cfg),
 		checkInterface(cfg.Gateway.Interface),
 		checkInterface(cfg.Gateway.UpstreamInterface),
-		checkGatewayInterfaceTopology(cfg.Gateway),
+		checkTopology(ctx, cfg, linuxnet.NewIPRoute(commandRunner.Output)),
+		checkPolicyRouteConflict(ctx, commandRunner),
 		checkIPv4("LAN IP", cfg.Gateway.LANIP),
 		checkInterfaceIPv4(cfg.Gateway.Interface, cfg.Gateway.LANIP),
 	}
 	return Report{Checks: checks}
+}
+
+func checkTopology(ctx context.Context, cfg config.Config, inspector linuxnet.InterfaceInspector) Check {
+	if err := gateway.ValidateTopology(ctx, cfg, inspector); err != nil {
+		return Check{Name: "Linux topology preflight", OK: false, Message: err.Error()}
+	}
+	message := "three-mode topology validated"
+	if cfg.Gateway.SameLAN() {
+		message += "; IPv6 forwarding is not protected in same-LAN mode"
+	}
+	return Check{Name: "Linux topology preflight", OK: true, Message: message}
+}
+
+func checkPolicyRouteConflict(ctx context.Context, runner process.Runner) Check {
+	if err := gateway.DetectPolicyRouteConflict(ctx, runner); err != nil {
+		return Check{Name: "Linux policy routing (ip -j rule show)", OK: false, Message: err.Error()}
+	}
+	return Check{Name: "Linux policy routing (ip -j rule show)", OK: true, Message: "no conflict in mihomo reserved priority range"}
 }
 
 func checkNftablesRulesRender(cfg config.Config) Check {

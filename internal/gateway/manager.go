@@ -13,8 +13,10 @@ import (
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/device"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/dhcp"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/nftables"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/runtime"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/sysctl"
 )
@@ -74,11 +76,14 @@ type gatewayDeps struct {
 	interfaces         func() ([]net.Interface, error)
 	interfaceByName    func(string) (*net.Interface, error)
 	interfaceAddrs     func(*net.Interface) ([]net.Addr, error)
+	interfaceInspector linuxnet.InterfaceInspector
+	policyRouteRunner  process.Runner
 	probeReservationIP func(ip string, expectedMAC string) error
 	now                func() time.Time
 }
 
 func defaultGatewayDeps() gatewayDeps {
+	commandRunner := process.NewRunner()
 	return gatewayDeps{
 		geteuid:     os.Geteuid,
 		loadState:   runtime.LoadState,
@@ -102,6 +107,8 @@ func defaultGatewayDeps() gatewayDeps {
 		interfaceAddrs: func(iface *net.Interface) ([]net.Addr, error) {
 			return iface.Addrs()
 		},
+		interfaceInspector: linuxnet.NewIPRoute(commandRunner.Output),
+		policyRouteRunner:  commandRunner,
 		probeReservationIP: probeReservationIPConflict,
 		now:                time.Now,
 	}
@@ -138,7 +145,7 @@ func (m Manager) Start(ctx context.Context) error {
 	mihomoManager := deps.newMihomo(m.cfg, m.paths)
 	nftManager := deps.newNft(m.cfg, m.paths)
 	sysctlManager := deps.newSysctl()
-	if err := m.preflight(dhcpManager, mihomoManager, nftManager, sysctlManager, deps); err != nil {
+	if err := m.preflight(ctx, dhcpManager, mihomoManager, nftManager, sysctlManager, deps); err != nil {
 		return err
 	}
 	if err := m.checkReservationConflicts(deps); err != nil {
@@ -257,7 +264,7 @@ func (m Manager) Reload(ctx context.Context) error {
 	if !deps.newDHCP(m.cfg, m.paths).Running(state.PIDDNSMasq) || !deps.newMihomo(m.cfg, m.paths).Running(state.PIDMihomo) {
 		return fmt.Errorf("gateway is degraded; reload requires both DHCP/DNS and mihomo to be running")
 	}
-	if err := m.validateReloadCandidate(); err != nil {
+	if err := m.validateReloadCandidate(ctx); err != nil {
 		return fmt.Errorf("reload candidate validation failed: %w", err)
 	}
 	if err := m.Stop(ctx); err != nil {
@@ -351,7 +358,7 @@ func archiveMihomoLog(path string, now time.Time) (string, error) {
 // validateReloadCandidate renders every generated artifact into an isolated
 // temporary runtime and runs the real mihomo validator. It deliberately does
 // not write applied policy state or alter host networking.
-func (m Manager) validateReloadCandidate() error {
+func (m Manager) validateReloadCandidate(ctx context.Context) error {
 	parent := filepath.Dir(m.paths.Dir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
@@ -380,7 +387,7 @@ func (m Manager) validateReloadCandidate() error {
 	mihomoManager := deps.newMihomo(candidate.cfg, candidate.paths)
 	nftManager := deps.newNft(candidate.cfg, candidate.paths)
 	sysctlManager := deps.newSysctl()
-	if err := candidate.preflight(dhcpManager, mihomoManager, nftManager, sysctlManager, deps); err != nil {
+	if err := candidate.preflight(ctx, dhcpManager, mihomoManager, nftManager, sysctlManager, deps); err != nil {
 		return err
 	}
 	if err := candidate.checkReservationConflicts(deps); err != nil {
@@ -433,7 +440,7 @@ func (m Manager) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (m Manager) preflight(dhcpManager dhcpService, mihomoManager mihomoService, nftManager nftService, sysctlManager sysctlService, deps gatewayDeps) error {
+func (m Manager) preflight(ctx context.Context, dhcpManager dhcpService, mihomoManager mihomoService, nftManager nftService, sysctlManager sysctlService, deps gatewayDeps) error {
 	if err := dhcpManager.Check(); err != nil {
 		return err
 	}
@@ -445,6 +452,16 @@ func (m Manager) preflight(dhcpManager dhcpService, mihomoManager mihomoService,
 	}
 	if err := sysctlManager.Check(); err != nil {
 		return err
+	}
+	if deps.interfaceInspector != nil {
+		if err := ValidateTopology(ctx, m.cfg, deps.interfaceInspector); err != nil {
+			return err
+		}
+	}
+	if deps.policyRouteRunner != nil {
+		if err := DetectPolicyRouteConflict(ctx, deps.policyRouteRunner); err != nil {
+			return err
+		}
 	}
 	sameInterface := strings.TrimSpace(m.cfg.Gateway.Interface) == strings.TrimSpace(m.cfg.Gateway.UpstreamInterface)
 	if m.cfg.Gateway.SameLAN() {

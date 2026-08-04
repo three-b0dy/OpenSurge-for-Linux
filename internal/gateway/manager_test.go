@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -208,9 +209,9 @@ func TestPreflightRejectsSameGatewayAndUpstreamInterface(t *testing.T) {
 	cfg := config.Default()
 	cfg.Gateway.Interface = "en0"
 	cfg.Gateway.UpstreamInterface = " en0 "
-	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: defaultGatewayDeps()}
+	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: gatewayDeps{}}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err == nil {
 		t.Fatalf("preflight() succeeded")
 	}
@@ -246,7 +247,7 @@ func TestPreflightAcceptsSameInterfaceInSameLANMode(t *testing.T) {
 		},
 	}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err != nil {
 		t.Fatalf("preflight() error = %v", err)
 	}
@@ -281,7 +282,7 @@ func TestPreflightAcceptsSameInterfaceInSameWiFiDHCPMode(t *testing.T) {
 		},
 	}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err != nil {
 		t.Fatalf("preflight() error = %v", err)
 	}
@@ -294,9 +295,9 @@ func TestPreflightRejectsDifferentInterfacesInSameLANMode(t *testing.T) {
 	cfg.Gateway.UpstreamInterface = "en7"
 	cfg.DHCP.Enabled = false
 	cfg.Transparent.Mode = config.TransparentModeTUN
-	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: defaultGatewayDeps()}
+	manager := Manager{cfg: cfg, paths: runtime.NewPaths(cfg), deps: gatewayDeps{}}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err == nil {
 		t.Fatalf("preflight() succeeded")
 	}
@@ -337,12 +338,49 @@ func TestPreflightRejectsLANIPOnAnotherInterface(t *testing.T) {
 		},
 	}
 
-	err := manager.preflight(&fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
 	if err == nil {
 		t.Fatalf("preflight() succeeded")
 	}
 	if !strings.Contains(err.Error(), "also configured on interface en7") {
 		t.Fatalf("preflight() error = %q", err)
+	}
+}
+
+func TestPreflightUsesInjectedLinuxTopologyCheck(t *testing.T) {
+	cfg := topologyTestConfig(config.GatewayModeIsolatedLAN, "lan0", "wan0")
+	manager := Manager{cfg: cfg, deps: gatewayDeps{
+		interfaceInspector: topologyInspector{
+			"lan0": {netip.MustParsePrefix("192.168.50.1/24")},
+			"wan0": {netip.MustParsePrefix("192.168.50.2/24")},
+		},
+		interfaceByName: func(name string) (*net.Interface, error) {
+			return &net.Interface{Name: name}, nil
+		},
+	}}
+
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	if err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("preflight() error = %v, want upstream prefix overlap", err)
+	}
+}
+
+func TestPreflightUsesInjectedPolicyRouteCheck(t *testing.T) {
+	cfg := topologyTestConfig(config.GatewayModeIsolatedLAN, "lan0", "wan0")
+	manager := Manager{cfg: cfg, deps: gatewayDeps{
+		interfaceInspector: topologyInspector{
+			"lan0": {netip.MustParsePrefix("192.168.50.1/24")},
+			"wan0": {netip.MustParsePrefix("198.51.100.2/24")},
+		},
+		policyRouteRunner: &policyRuleRunner{output: []byte(`[{"priority":9001}]`)},
+		interfaceByName: func(name string) (*net.Interface, error) {
+			return &net.Interface{Name: name}, nil
+		},
+	}}
+
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	if err == nil || !strings.Contains(err.Error(), "9001") {
+		t.Fatalf("preflight() error = %v, want policy priority conflict", err)
 	}
 }
 
@@ -920,7 +958,12 @@ func newLifecycleTestManager(cfg config.Config, paths runtime.Paths, _ *[]string
 			}
 			return []net.Addr{&net.IPNet{IP: net.ParseIP(cfg.Gateway.LANIP), Mask: net.CIDRMask(24, 32)}}, nil
 		},
-		now: time.Now,
+		interfaceInspector: topologyInspector{
+			cfg.Gateway.Interface:         {netip.MustParsePrefix(cfg.Gateway.LANIP + "/24")},
+			cfg.Gateway.UpstreamInterface: {netip.MustParsePrefix("198.51.100.2/24")},
+		},
+		policyRouteRunner: &policyRuleRunner{output: []byte(`[{"priority":0},{"priority":32766}]`)},
+		now:               time.Now,
 	}}
 }
 

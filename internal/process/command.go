@@ -12,6 +12,30 @@ import (
 
 const DefaultCommandTimeout = 5 * time.Second
 
+// Runner is the context-aware command boundary used by Linux preflight
+// checks. Implementations execute argv directly; callers never need a shell.
+type Runner interface {
+	Output(context.Context, string, ...string) ([]byte, error)
+}
+
+type commandRunner struct{}
+
+func NewRunner() Runner {
+	return commandRunner{}
+}
+
+func (commandRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	out, err := cmd.Output()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return out, fmt.Errorf("%s timed out", formatCommand(name, args))
+	}
+	return out, err
+}
+
 func Output(name string, args ...string) ([]byte, error) {
 	return OutputTimeout(DefaultCommandTimeout, name, args...)
 }

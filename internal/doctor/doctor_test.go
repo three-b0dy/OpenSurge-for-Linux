@@ -1,14 +1,75 @@
 package doctor
 
 import (
+	"context"
+	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/linuxnet"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/mihomo"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/process"
 )
+
+type doctorTopologyInspector map[string][]netip.Prefix
+
+func (f doctorTopologyInspector) Addresses(_ context.Context, name string) ([]netip.Prefix, error) {
+	addresses, ok := f[name]
+	if !ok {
+		return nil, errors.New("interface not found")
+	}
+	return addresses, nil
+}
+
+func (doctorTopologyInspector) Neighbors(context.Context, string) ([]linuxnet.Neighbor, error) {
+	return nil, nil
+}
+
+type doctorPolicyRunner struct {
+	err   error
+	calls [][]string
+}
+
+func (r *doctorPolicyRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	return nil, r.err
+}
+
+var _ process.Runner = (*doctorPolicyRunner)(nil)
+
+func TestCheckTopologyReportsSameLANIPv6Limitation(t *testing.T) {
+	cfg := config.Default()
+	cfg.Gateway.Mode = config.GatewayModeSameLAN
+	cfg.Gateway.Interface = "lan0"
+	cfg.Gateway.UpstreamInterface = "lan0"
+	cfg.Gateway.LANIP = "192.168.50.1"
+	cfg.DHCP.Enabled = false
+	check := checkTopology(context.Background(), cfg, doctorTopologyInspector{
+		"lan0": {netip.MustParsePrefix("192.168.50.1/24")},
+	})
+	if !check.OK {
+		t.Fatalf("checkTopology() OK = false: %s", check.Message)
+	}
+	if !strings.Contains(strings.ToLower(check.Message), "ipv6") {
+		t.Fatalf("checkTopology() message = %q, want IPv6 limitation", check.Message)
+	}
+}
+
+func TestCheckPolicyRouteConflictNamesIPRuleCommand(t *testing.T) {
+	runner := &doctorPolicyRunner{err: errors.New("ip unavailable")}
+	check := checkPolicyRouteConflict(context.Background(), runner)
+	if check.OK || !strings.Contains(check.Message, "ip -j rule show") {
+		t.Fatalf("checkPolicyRouteConflict() = %#v", check)
+	}
+	if want := [][]string{{"ip", "-j", "rule", "show"}}; !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("runner calls = %#v, want %#v", runner.calls, want)
+	}
+}
 
 func TestCheckGatewayInterfaceTopology(t *testing.T) {
 	cfg := config.Default()
