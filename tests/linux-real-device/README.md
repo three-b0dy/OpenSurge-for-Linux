@@ -12,14 +12,21 @@ The required inputs are:
 UPSTREAM_IFACE=eno1
 DOWNSTREAM_IFACE=eno2       # set this or DOWNSTREAM_VLAN, not both
 LAN_CIDR=192.168.50.0/24
-MODE=tun                    # isolated_lan, same_lan, same_wifi_dhcp, tun, off
+MODE=isolated_lan           # Gateway.Mode: isolated_lan, same_lan, same_wifi_dhcp
+TRANSPARENT_MODE=tun        # optional transparent mode: off or tun
 ```
+
+`MODE` describes the gateway topology. `isolated_lan` requires different
+upstream and downstream interfaces. `same_lan` and `same_wifi_dhcp` are
+one-interface topologies: pass the same name in `UPSTREAM_IFACE` and
+`DOWNSTREAM_IFACE`; a VLAN input is not valid for those modes. Transparent TUN
+selection is independent and belongs in `TRANSPARENT_MODE`.
 
 For a VLAN downstream, use either a VLAN ID or its interface name:
 
 ```sh
 UPSTREAM_IFACE=eno1 DOWNSTREAM_VLAN=eno1.50 \
-LAN_CIDR=192.168.50.0/24 MODE=isolated_lan \
+LAN_CIDR=192.168.50.0/24 MODE=isolated_lan TRANSPARENT_MODE=off \
 bash tests/linux-real-device/smoke.sh
 ```
 
@@ -27,8 +34,8 @@ The same-Wi-Fi DHCP mode is refused unless the upstream router DHCP service
 has been disabled and the operator explicitly confirms it:
 
 ```sh
-UPSTREAM_IFACE=wlan0 DOWNSTREAM_IFACE=eno2 \
-LAN_CIDR=192.168.50.0/24 MODE=same_wifi_dhcp \
+UPSTREAM_IFACE=wlan0 DOWNSTREAM_IFACE=wlan0 \
+LAN_CIDR=192.168.50.0/24 MODE=same_wifi_dhcp TRANSPARENT_MODE=tun \
 ROUTER_DHCP_DISABLED=confirmed bash tests/linux-real-device/smoke.sh
 ```
 
@@ -38,6 +45,12 @@ entrypoint, or pass the variables above to `smoke.sh` for Linux-side
 validation and a read-only plan. The help/validation path does not claim to
 have run on macOS; actual hardware checks require a Linux host and operator
 approval.
+
+Run the static contract checks with:
+
+```sh
+bash tests/linux-real-device/contract_test.sh
+```
 
 For transparent TUN evidence, use `make linux-lab-test-tun` on a Linux host
 with root privileges and the required lab tools. That namespace gate removes

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+TRANSPARENT_MODE="${TRANSPARENT_MODE:-off}"
+
 usage() {
   cat <<'EOF'
 Usage: tests/linux-real-device/smoke.sh [--help]
@@ -15,14 +17,15 @@ Required environment:
   DOWNSTREAM_IFACE     Downstream interface (mutually exclusive with VLAN).
   DOWNSTREAM_VLAN       VLAN interface name or VLAN ID (mutually exclusive).
   LAN_CIDR              Downstream LAN IPv4 CIDR, for example 192.168.50.0/24.
-  MODE                  isolated_lan, same_lan, same_wifi_dhcp, tun, or off.
+  MODE                  isolated_lan, same_lan, same_wifi_dhcp
+  TRANSPARENT_MODE      off or tun (optional; defaults to off)
 
 For MODE=same_wifi_dhcp, also set:
   ROUTER_DHCP_DISABLED=confirmed
 
 Example:
   UPSTREAM_IFACE=eno1 DOWNSTREAM_IFACE=eno2 \
-    LAN_CIDR=192.168.50.0/24 MODE=tun \
+    LAN_CIDR=192.168.50.0/24 MODE=isolated_lan TRANSPARENT_MODE=tun \
     bash tests/linux-real-device/smoke.sh
 
 The runner prints a plan only. Any actual host-networking operation requires a
@@ -99,23 +102,40 @@ resolve_downstream() {
     die "invalid resolved downstream VLAN interface: $DOWNSTREAM_RESOLVED"
 }
 
-validate_inputs() {
+validate_topology() {
   [[ -n "${UPSTREAM_IFACE:-}" ]] || die "UPSTREAM_IFACE is required"
   valid_interface_name "$UPSTREAM_IFACE" || die "invalid UPSTREAM_IFACE: $UPSTREAM_IFACE"
   resolve_downstream
-  [[ "$UPSTREAM_IFACE" != "$DOWNSTREAM_RESOLVED" ]] ||
-    die "upstream and downstream interfaces must be different"
   [[ -n "${LAN_CIDR:-}" ]] || die "LAN_CIDR is required"
   valid_lan_cidr "$LAN_CIDR" || die "invalid LAN_CIDR: $LAN_CIDR"
   [[ -n "${MODE:-}" ]] || die "MODE is required"
   case "$MODE" in
-    isolated_lan|same_lan|same_wifi_dhcp|tun|off) ;;
+    isolated_lan)
+      [[ "$UPSTREAM_IFACE" != "$DOWNSTREAM_RESOLVED" ]] ||
+        die "isolated_lan requires different upstream and downstream interfaces"
+      ;;
+    same_lan)
+      [[ -n "${DOWNSTREAM_IFACE:-}" && "$DOWNSTREAM_IFACE" == "$UPSTREAM_IFACE" ]] ||
+        die "same_lan requires DOWNSTREAM_IFACE to equal UPSTREAM_IFACE"
+      ;;
+    same_wifi_dhcp)
+      [[ -n "${DOWNSTREAM_IFACE:-}" && "$DOWNSTREAM_IFACE" == "$UPSTREAM_IFACE" ]] ||
+        die "same_wifi_dhcp requires DOWNSTREAM_IFACE to equal UPSTREAM_IFACE"
+      ;;
     *) die "unsupported MODE: $MODE" ;;
   esac
   if [[ "$MODE" == "same_wifi_dhcp" && "${ROUTER_DHCP_DISABLED:-}" != "confirmed" ]]; then
     echo "WARNING: MODE=same_wifi_dhcp can conflict with the upstream router DHCP service." >&2
     die "refusing same_wifi_dhcp without ROUTER_DHCP_DISABLED=confirmed"
   fi
+  case "$TRANSPARENT_MODE" in
+    off|tun) ;;
+    *) die "unsupported TRANSPARENT_MODE: $TRANSPARENT_MODE (use off or tun)" ;;
+  esac
+}
+
+validate_inputs() {
+  validate_topology
   command -v ip >/dev/null 2>&1 || die "iproute2 'ip' command is required"
 }
 
@@ -125,6 +145,7 @@ print_plan() {
   echo "  downstream interface: $DOWNSTREAM_RESOLVED"
   echo "  LAN CIDR:             $LAN_CIDR"
   echo "  mode:                 $MODE"
+  echo "  transparent mode:     $TRANSPARENT_MODE"
   echo
   echo "Read-only checks an operator should perform:"
   printf '  ip -j addr show dev %q\n' "$UPSTREAM_IFACE"
@@ -154,4 +175,6 @@ main() {
   print_plan
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
