@@ -10,3 +10,4 @@
 /.playwright-cli/
 *.tsbuildinfo
 .superpowers/
+.worktrees/
