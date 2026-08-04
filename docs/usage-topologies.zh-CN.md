@@ -1,7 +1,7 @@
 # OpenSurge for Linux 使用拓扑
 
 OpenSurge 面向 Debian 12+、Ubuntu 22.04+ 的 amd64/arm64 主机。当前支持三种配置模式，
-但完整 DHCP、DNS、NAT、TUN 流量和回滚生命周期仍属于后续 Linux 阶段。
+并提供 DHCP、DNS、NAT、mihomo TUN 与回滚的 Linux 网关生命周期。
 
 ## 三种模式
 
@@ -14,6 +14,10 @@ OpenSurge 面向 Debian 12+、Ubuntu 22.04+ 的 amd64/arm64 主机。当前支�
 IPv4 是当前支持的网关协议。透明代理唯一使用 mihomo TUN 自动路由/重定向；
 `redir_port`、REDIRECT 和 TPROXY 不是迁移目标。其他模式不会把未管理的 IPv6 路径
 误报为已验证。
+
+Linux TUN 的 `auto-route` 与 `auto-redirect` 下，不能将 `255.255.255.255/32` 放入
+`route-exclude-address`；它可能导致 nftables/netlink 初始化返回 `EEXIST`。因此有限广播
+服务发现目前没有通过网关数据面验证。
 
 ## 迁移与人工映射
 
@@ -28,6 +32,7 @@ opensurge config validate --config candidate.yaml
 
 ## Linux 基础设施
 
-iproute2 负责接口、地址、路由和邻居检查；nftables 只负责 OpenSurge 自己的命名表；
-systemd 是后续 gateway lifecycle 的服务方向。当前阶段的 CLI 和 Web GUI 是可测试的
-控制面基础，不是已经可安装的发行包。
+iproute2 负责接口、地址、路由和邻居检查；sysctl 管理 IPv4 forwarding；dnsmasq 提供
+需要的 DHCP/DNS；nftables 只负责 OpenSurge 自己的命名表；systemd 管理 root 网关服务和
+非特权 LAN HTTPS 控制服务。GitHub Release 提供 amd64/arm64 `.deb`；安装后用本机 TTY 的
+`opensurge-setup init` 创建单管理员登录与十年自签名证书。

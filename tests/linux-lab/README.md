@@ -19,7 +19,7 @@ Run on Linux as root, or with a cached sudo credential so the script can
 re-exec itself through `sudo -n`:
 
 - `iproute2` (`ip` with network namespaces), `nft`, and `sysctl`;
-- `dnsmasq`, `dig`, `curl` with `--dns-servers`, `openssl`, `go`;
+- `dnsmasq`, `dig`, `curl`, `openssl`, `go`; and
 - a DHCP client (`dhclient` or `udhcpc`); and
 - a Linux mihomo binary in `PATH`, or `OPENSURGE_LAB_MIHOMO_BIN=/absolute/path`.
 

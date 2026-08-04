@@ -329,6 +329,9 @@ func TestRenderTUNForcesLinuxAutoRouteAndAutoRedirect(t *testing.T) {
 			t.Fatalf("rendered config missing Linux-owned value %q:\n%s", want, rendered)
 		}
 	}
+	if strings.Contains(rendered, "255.255.255.255/32") {
+		t.Fatalf("rendered TUN config contains the broadcast route exclusion that conflicts with Linux auto-redirect:\n%s", rendered)
+	}
 }
 
 func TestImportedProfileCannotOverrideAutoRedirect(t *testing.T) {

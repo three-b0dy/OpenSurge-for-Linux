@@ -38,8 +38,8 @@ opensurge device-policy-select --config ./config.yaml \
   --device alice-phone --slot default --policy Proxy
 ```
 
-selector 命令只改变指定设备 slot。desired 修改由后续 Linux gateway lifecycle 应用；在此
-之前 API 会准确报告校验结果和 lifecycle 归属，不伪造网络动作已成功。
+selector 命令只改变指定设备 slot。运行中的 Linux gateway lifecycle 会将有效策略渲染给
+单个 mihomo 进程；API 对校验或运行时错误返回明确结果，不伪造网络动作已成功。
 
 ## 身份边界
 

@@ -3,8 +3,8 @@
 ## What platforms are supported?
 
 The target is Debian 12+ or Ubuntu 22.04+ on amd64 or arm64. The repository
-currently provides a Linux foundation rather than an installable gateway
-service.
+provides an installable Linux gateway and LAN control plane through
+architecture-matched GitHub Release `.deb` packages.
 
 ## Which topology should I choose?
 
@@ -16,7 +16,9 @@ off. The project does not change that router's DHCP state during migration.
 ## How does transparent proxying work?
 
 mihomo TUN with automatic route/redirect is the only supported transparent
-path in this phase. `redir_port` must remain zero.
+path. `redir_port` must remain zero. Do not add `255.255.255.255/32` to
+`route-exclude-address`: it can make Linux auto-redirect initialization fail
+with `EEXIST`. Limited-broadcast discovery is not yet a validated traffic path.
 
 ## Does migration apply changes?
 
@@ -24,7 +26,13 @@ No. `config migrate` emits a candidate YAML on stdout and mapping notes on
 stderr. It never writes a file. Manually map interfaces and the management
 listen address, then run `config validate`.
 
-## Is a gateway service package available?
+## How do I install and access the gateway?
 
-Not yet. nftables, iproute2, and the systemd service direction are being built;
-the complete lifecycle and distribution packaging are later work.
+Install the matching Release `.deb`, review `/etc/opensurge/config.yaml`, then
+run `sudo opensurge-setup init --username admin` from a local TTY and enable
+`opensurge-gateway.socket` plus `opensurge-control.service`. The control plane
+serves HTTPS only on the configured LAN `management.listen` address and uses a
+single administrator login. Initialization creates a ten-year self-signed
+certificate; replace it later with
+`opensurge-setup replace-certificate --cert ... --key ...` using a certificate
+whose SAN includes the listener IP.

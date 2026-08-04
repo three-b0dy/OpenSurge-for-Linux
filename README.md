@@ -1,8 +1,9 @@
 # OpenSurge for Linux
 
 OpenSurge 是一个面向 Linux 的 Surge 风格家庭网关控制面。当前仓库建立
-配置契约、mihomo 配置渲染、Linux 网络适配器和 OpenSurge 专属 nftables
-规则；完整网关生命周期与 systemd 单元仍在后续阶段实现。
+配置契约、mihomo 配置渲染和完整的 Linux 网关生命周期：dnsmasq 提供
+DHCP/DNS，mihomo TUN 提供透明代理，nftables 提供 OpenSurge 专属的转发/NAT
+规则，systemd 负责已安装服务的边界。
 
 ## 支持范围
 
@@ -24,6 +25,11 @@ OpenSurge 是一个面向 Linux 的 Surge 风格家庭网关控制面。当前�
 `isolated_lan` 不提供下游 IPv6 配置并丢弃下游 IPv6 forwarding。其余模式
 会提示未托管的 IPv6 路径，不把 IPv6 绕行误报为已验证。
 
+Linux 的 mihomo TUN 始终启用 `auto-route` 和 `auto-redirect`。为避免部分
+nftables/netlink 环境返回 `EEXIST`，`route-exclude-address` **不得**加入
+`255.255.255.255/32`。因此有限广播发现（例如向该地址发送的服务发现）不在当前
+已验证的数据面契约内。
+
 ## CLI
 
 ```sh
@@ -40,6 +46,32 @@ go run ./cmd/opensurge doctor --config examples/config.example.yaml
 默认配置路径是 `/etc/opensurge/config.yaml`。默认运行数据目录为
 `/var/lib/opensurge`，运行时 socket 方向为 `/run/opensurge`。
 
+## 安装与管理
+
+GitHub Release 提供 amd64 与 arm64 的 `.deb`。在匹配架构的 Debian/Ubuntu 主机上
+安装后，先检查并编辑 `/etc/opensurge/config.yaml`，再从本机 TTY 初始化管理员：
+
+```sh
+sudo dpkg -i opensurge_<version>_$(dpkg --print-architecture).deb
+sudo opensurge-setup init --username admin
+sudo systemctl enable --now opensurge-gateway.socket opensurge-control.service
+```
+
+`opensurge-gateway.service` 以 root 身份拥有网络数据面；
+`opensurge-control.service` 以受限的 `opensurge` 用户提供配置中
+`management.listen` 指定 LAN IPv4 上的 HTTPS Control API 与 Web GUI。首次初始化会
+生成有效期十年的 RSA-3072 自签名证书；浏览器告警是预期行为。之后可将经校验、且含该
+监听 IP SAN 的自有证书和私钥放入 `/etc/opensurge/tls/`，并执行：
+
+```sh
+sudo opensurge-setup replace-certificate \
+  --cert /etc/opensurge/tls/custom-cert.pem \
+  --key /etc/opensurge/tls/custom-key.pem
+```
+
+登录采用单管理员的普通路由器式会话登录。忘记密码时在本机 TTY 执行
+`sudo opensurge-setup reset-password --username admin`。
+
 ## 上游镜像
 
 `upstream` 分支由 GitHub Actions 每日同步，也可通过手动 workflow
@@ -52,11 +84,13 @@ dispatch 触发。同步使用受保护的精确 ref lease，只更新 `upstream
 make test
 make web-test
 make build
+sudo -v && make linux-lab-test
+sudo -v && make linux-lab-test-tun
 ```
 
-当前代码阶段提供通用 Control API/Web GUI 基础和 Linux 网络原语；Debian
-软件包、已安装的 systemd gateway 服务以及生产部署单元尚未实现，不应按可
-安装发行版对待。长期方向是以 nftables、iproute2 和 systemd 为 Linux 服务
-基础，并在后续阶段接入网关生命周期与 Linux 实验室验证。
+`make linux-lab-test` 以 Linux network namespaces 验证 DHCP、DNS、NAT、nftables
+所有权和回滚清理。`make linux-lab-test-tun` 额外验证无显式客户端代理的 HTTPS 流量
+进入 mihomo TUN 日志。两者均需要 Linux root/network namespace 能力，不能由 macOS
+主机测试替代。
 
 更多迁移说明见 [docs/linux-migration.md](docs/linux-migration.md)。

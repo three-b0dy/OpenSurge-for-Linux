@@ -33,6 +33,7 @@ DHCP_SCRIPT=""
 CLIENT_MAC=""
 CLIENT_IP=""
 FORWARDING_BEFORE=""
+TUN_FAKE_IP=""
 UPSTREAM_DNS_PID=""
 ORIGIN_PID=""
 PROXY_PID=""
@@ -90,10 +91,10 @@ resolve_tools() {
     MIHOMO_BIN="$(command -v mihomo || true)"
 	fi
 	[[ -x "$MIHOMO_BIN" ]] || die "mihomo binary not found; set OPENSURGE_LAB_MIHOMO_BIN"
-	local curl_help
-	curl_help="$("$CURL_BIN" --help all 2>/dev/null)"
-	[[ "$curl_help" == *"--dns-servers"* ]] || die "curl must support --dns-servers"
-	"$IP_BIN" netns help >/dev/null 2>&1 || die "iproute2 netns support is required"
+	# `ip netns help` intentionally exits non-zero even when namespace support is
+	# present. Listing namespaces is the supported, non-mutating capability
+	# probe; setup_network performs the privileged create/delete operations.
+	"$IP_BIN" netns list >/dev/null 2>&1 || die "iproute2 netns support is required"
 }
 
 make_runtime() {
@@ -141,14 +142,14 @@ case "${reason:-}" in
     mask="${new_subnet_mask:-${subnet:-255.255.255.0}}"
     router="${new_routers:-${router:-}}"
     dns_servers="${new_domain_name_servers:-${dns:-}}"
-    [[ -n "$address" ]] || exit 0
+    [ -n "$address" ] || exit 0
     prefix="$(prefix_from_mask "$mask")"
-    if [[ -n "${OPENSURGE_DHCP_EVIDENCE_FILE:-}" ]]; then
+    if [ -n "${OPENSURGE_DHCP_EVIDENCE_FILE:-}" ]; then
       printf 'address=%s\nrouter=%s\ndns=%s\n' "$address" "$router" "$dns_servers" >"$OPENSURGE_DHCP_EVIDENCE_FILE"
     fi
     ip addr flush dev "$interface" scope global
     ip addr add "$address/$prefix" dev "$interface"
-    if [[ -n "$router" ]]; then
+    if [ -n "$router" ]; then
       set -- $router
       ip route replace default via "$1" dev "$interface"
     fi
@@ -237,17 +238,20 @@ setup_network() {
   "$IP_BIN" netns add "$CLIENT_NS"
   "$IP_BIN" netns add "$UPSTREAM_NS"
 
-  "$IP_BIN" link add opensurge-lab-client-veth type veth peer name opensurge-lab-gw-lan
-  "$IP_BIN" link set opensurge-lab-client-veth netns "$CLIENT_NS"
-  "$IP_BIN" link set opensurge-lab-gw-lan netns "$GW_NS"
-  "$IP_BIN" link add opensurge-lab-gw-wan type veth peer name opensurge-lab-upstream-veth
-  "$IP_BIN" link set opensurge-lab-gw-wan netns "$GW_NS"
-  "$IP_BIN" link set opensurge-lab-upstream-veth netns "$UPSTREAM_NS"
+  # Linux interface names are limited to 15 bytes. Keep the temporary veth
+  # names short; each endpoint is renamed to lan0, wan0, or eth0 inside its
+  # namespace immediately after being moved.
+  "$IP_BIN" link add oslab-client type veth peer name oslab-gwlan
+  "$IP_BIN" link set oslab-client netns "$CLIENT_NS"
+  "$IP_BIN" link set oslab-gwlan netns "$GW_NS"
+  "$IP_BIN" link add oslab-gwwan type veth peer name oslab-upstream
+  "$IP_BIN" link set oslab-gwwan netns "$GW_NS"
+  "$IP_BIN" link set oslab-upstream netns "$UPSTREAM_NS"
 
-  "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" link set opensurge-lab-gw-lan name lan0
-  "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" link set opensurge-lab-gw-wan name wan0
-  "$IP_BIN" netns exec "$CLIENT_NS" "$IP_BIN" link set opensurge-lab-client-veth name eth0
-  "$IP_BIN" netns exec "$UPSTREAM_NS" "$IP_BIN" link set opensurge-lab-upstream-veth name eth0
+  "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" link set oslab-gwlan name lan0
+  "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" link set oslab-gwwan name wan0
+  "$IP_BIN" netns exec "$CLIENT_NS" "$IP_BIN" link set oslab-client name eth0
+  "$IP_BIN" netns exec "$UPSTREAM_NS" "$IP_BIN" link set oslab-upstream name eth0
 
   for namespace in "$GW_NS" "$CLIENT_NS" "$UPSTREAM_NS"; do
     "$IP_BIN" netns exec "$namespace" "$IP_BIN" link set lo up
@@ -260,8 +264,13 @@ setup_network() {
   "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" addr add "$LAN_IP/24" dev lan0
   "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" addr add "$UPSTREAM_GW_IP/24" dev wan0
   "$IP_BIN" netns exec "$UPSTREAM_NS" "$IP_BIN" addr add "$UPSTREAM_SERVER_IP/24" dev eth0
+  "$IP_BIN" netns exec "$GW_NS" "$IP_BIN" route add default via "$UPSTREAM_SERVER_IP" dev wan0
+  # A new namespace can inherit enabled forwarding from its host (notably
+  # under OrbStack). Force the gateway into its known-disabled precondition so
+  # this lab verifies both enablement and rollback rather than inheriting it.
+  "$IP_BIN" netns exec "$GW_NS" "$SYSCTL_BIN" -w net.ipv4.ip_forward=0 >/dev/null
   FORWARDING_BEFORE="$($IP_BIN netns exec "$GW_NS" "$SYSCTL_BIN" -n net.ipv4.ip_forward)"
-  [[ "$FORWARDING_BEFORE" == "0" ]] || die "new gateway namespace forwarding is not disabled"
+  [[ "$FORWARDING_BEFORE" == "0" ]] || die "gateway namespace forwarding was not disabled"
   CLIENT_MAC="$($IP_BIN netns exec "$CLIENT_NS" "$IP_BIN" link show eth0 | awk '/link\/ether/ { print $2; exit }')"
   [[ -n "$CLIENT_MAC" ]] || die "could not read client MAC address"
 }
@@ -327,7 +336,14 @@ client_dhcp_ready() {
   local octet="${CLIENT_IP##*.}"
   ((octet >= 100 && octet <= 200)) || return 1
   awk -v mac="$CLIENT_MAC" -v ip="$CLIENT_IP" '$2 == mac && $3 == ip { found=1 } END { exit !found }' "$RUNTIME_DIR/dnsmasq.leases" 2>/dev/null || return 1
-  grep -Eq '^dns=.*192\.168\.50\.1' "$RUNTIME_DIR/dhcp-evidence" 2>/dev/null
+  # dhclient records the DNS option in its lease file. It is more reliable
+  # than a custom callback environment variable, which dhclient may sanitize.
+  # The subsequent DNS assertion verifies the assigned resolver is reachable.
+  if [[ "$DHCP_CLIENT_BIN" == *"dhclient" ]]; then
+    grep -Eq '^[[:space:]]*option domain-name-servers 192\.168\.50\.1;' "$RUNTIME_DIR/dhclient.leases" 2>/dev/null
+  else
+    grep -Eq '^dns=.*192\.168\.50\.1' "$RUNTIME_DIR/dhcp-evidence" 2>/dev/null
+  fi
 }
 
 obtain_client_lease() {
@@ -350,6 +366,7 @@ assert_client_dns() {
     die "client DNS query failed"
   if [[ "$LAB_MODE" == "tun" ]]; then
     [[ "$answer" == 198.18.* ]] || die "TUN DNS did not return a fake IP: $answer"
+    TUN_FAKE_IP="${answer%%$'\n'*}"
   else
     printf '%s\n' "$answer" | grep -qx "$UPSTREAM_SERVER_IP" ||
       die "client DNS returned unexpected answer: $answer"
@@ -416,14 +433,23 @@ assert_tun_connection_log() {
 }
 
 assert_tun_flow() {
-  local response
+  local response curl_stderr
   assert_mihomo_tun_ready
   assert_client_default_route
   assert_client_dns
   assert_no_explicit_proxy
-  response="$(client_without_proxy \
-    "$CURL_BIN" -q --dns-servers "$LAN_IP" --insecure --fail --show-error --max-time 15 \
-    "https://example.com/" 2>/dev/null)" || die "client no-proxy TUN HTTPS request failed"
+  curl_stderr="$RUNTIME_DIR/client-tun-curl.stderr"
+  # DNS is asserted above with dig. Use that returned fake IP here so the
+  # transparent-flow assertion works with distro curl builds that lack
+  # c-ares and therefore cannot implement --dns-servers.
+  [[ -n "$TUN_FAKE_IP" ]] || die "TUN DNS did not provide a fake IP"
+  if ! response="$(client_without_proxy \
+    "$CURL_BIN" -q --resolve "example.com:$ORIGIN_PORT:$TUN_FAKE_IP" \
+    --insecure --fail --show-error --max-time 15 "https://example.com/" \
+    2>"$curl_stderr")"; then
+    cat "$curl_stderr" >&2 2>/dev/null || true
+    die "client no-proxy TUN HTTPS request failed"
+  fi
   printf '%s\n' "$response" | grep -qx "OpenSurge Linux lab origin" ||
     die "TUN HTTPS request did not reach the controlled origin: $response"
   printf '%s\n' "$response" | grep -qx "remote=$UPSTREAM_GW_IP" ||
@@ -433,6 +459,12 @@ assert_tun_flow() {
 
 assert_nft_loaded() {
   gateway_exec "$NFT_BIN" list table inet opensurge >/dev/null 2>&1 || die "OpenSurge nftables table is not loaded"
+}
+
+assert_forwarding_enabled() {
+  local current
+  current="$(gateway_exec "$SYSCTL_BIN" -n net.ipv4.ip_forward)"
+  [[ "$current" == "1" ]] || die "IPv4 forwarding is $current; expected 1 while gateway is running"
 }
 
 assert_forwarding_restored() {
@@ -483,6 +515,7 @@ run_success_case() {
   write_config "$LAB_MODE"
   start_gateway "$ORIGINAL_PATH"
   assert_nft_loaded
+  assert_forwarding_enabled
   obtain_client_lease
   if [[ "$LAB_MODE" == "tun" ]]; then
     assert_tun_flow

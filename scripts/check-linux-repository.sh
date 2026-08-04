@@ -4,7 +4,16 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 scan_paths=("$repo_root/.github" "$repo_root/Makefile" "$repo_root/scripts" "$repo_root/packaging")
 
-if rg -n --glob '!check-linux-repository.sh' 'runs-on: macos|GOOS=darwin|OpenSurge-for-Mac|notarize|xcode' "${scan_paths[@]}"; then
+if rg -n --glob '!check-linux-repository.sh' \
+  'runs-on: macos|GOOS=darwin|notarize|xcode' "${scan_paths[@]}"; then
+	echo "macOS release/build automation remains in active release paths" >&2
+	exit 1
+fi
+
+# The upstream mirror deliberately names its external source repository
+# OpenSurge-for-Mac. It is a Linux-hosted ref mirror, not a release/build path.
+if rg -n --glob '!check-linux-repository.sh' --glob '!sync-upstream.yml' \
+  'OpenSurge-for-Mac' "${scan_paths[@]}"; then
 	echo "macOS release/build automation remains in active release paths" >&2
 	exit 1
 fi

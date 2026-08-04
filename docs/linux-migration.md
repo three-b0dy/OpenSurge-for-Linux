@@ -6,10 +6,10 @@ Linux. It does not perform an installation or change a live network.
 ## Platform contract
 
 The supported target is Debian 12+ or Ubuntu 22.04+ on amd64 or arm64. The
-Linux foundation uses `iproute2` for interface and route inspection, nftables for
-the OpenSurge-owned firewall table, and systemd as the later service direction.
-Debian packages and installed gateway systemd units are not implemented in this
-phase.
+installed product uses `iproute2` for interface and route inspection, nftables
+for the OpenSurge-owned firewall table, and systemd service boundaries. GitHub
+Releases provide architecture-matched `.deb` packages containing the gateway,
+LAN control service, Web GUI assets, systemd units, and a pinned mihomo binary.
 
 The supported gateway modes are:
 
@@ -23,7 +23,10 @@ The supported gateway modes are:
 IPv4 is the supported gateway protocol. mihomo TUN with automatic route and
 redirect is the only transparent path; `redir_port`, REDIRECT, and TPROXY are
 not migration targets. `isolated_lan` drops downstream IPv6 forwarding, while
-the other modes warn that IPv6 is not managed by this foundation.
+the other modes warn that IPv6 is not managed by OpenSurge. Do not add
+`255.255.255.255/32` to mihomo's `route-exclude-address`: with Linux
+auto-route/auto-redirect it can make nftables/netlink initialization fail with
+`EEXIST`. Limited-broadcast service discovery is consequently unverified.
 
 ## Candidate migration
 
@@ -56,7 +59,7 @@ Before using the candidate, inspect and map:
 The migration command does not disable or re-enable the upstream router's DHCP
 service. In `same_wifi_dhcp`, the operator must perform and record that router
 DHCP change separately, and must restore it separately after stopping the
-future gateway lifecycle.
+OpenSurge gateway.
 
 Validate only after the manual review:
 
@@ -65,5 +68,7 @@ opensurge config validate --config /tmp/opensurge-candidate.yaml
 ```
 
 Validation proves configuration semantics and rendering constraints. It does
-not prove real DHCP, DNS, forwarding, NAT, TUN traffic, or rollback; those need
-the Linux lab gates implemented in a later phase.
+not replace host-network evidence: run `sudo -v && make linux-lab-test` for
+DHCP, DNS, forwarding, NAT and rollback, and
+`sudo -v && make linux-lab-test-tun` for the transparent TUN path. Both gates
+require a Linux host with root network-namespace support.
