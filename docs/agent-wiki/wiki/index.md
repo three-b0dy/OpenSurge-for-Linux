@@ -4,7 +4,8 @@ OpenSurge is a Linux gateway and control-plane project for Debian 12+ and
 Ubuntu 22.04+ on amd64 and arm64. The installed product owns configuration,
 Linux network inspection, sysctl forwarding, dnsmasq when required, mihomo TUN,
 an OpenSurge-owned nftables table, and systemd service boundaries. GitHub
-Releases provide matching `.deb` packages.
+Releases provide the standalone `opensurge-install` entry point and matching
+`.deb` packages.
 
 ## Required invariants
 
@@ -23,6 +24,16 @@ Releases provide matching `.deb` packages.
 - `config migrate` produces a candidate on stdout and notes on stderr. It never
   writes a source or destination file and never changes an upstream router's
   DHCP state.
+- `opensurge-install` is the only supported Debian/Ubuntu package path. It
+  verifies the release package with `SHA256SUMS`; direct package installation
+  and unattended package upgrades are rejected by the package guard.
+- A fresh installer run creates only a non-disruptive `same_lan` control-plane
+  configuration from the literal IPv4 default-route link and address. It keeps
+  DHCP and transparent mode off, never maps friendly interface aliases, and
+  does not infer isolated-LAN or same-Wi-Fi-DHCP topology.
+- The installer requires a writable controlling TTY because its generated
+  one-time `admin` password is displayed only there. Existing configuration and
+  administrator state are preserved.
 
 ## Repository map
 
@@ -40,12 +51,16 @@ Releases provide matching `.deb` packages.
 
 ## Verification boundaries
 
-`make test` and `go test ./...` are unit/build checks. `make web-test` checks the
-web package. Claims about DHCP, DNS, mihomo traffic, nftables forwarding, TUN,
-rollback, or a real host network require the corresponding Linux lab gate:
+`make test` and `go test ./...` are unit/build checks. `make web-test` checks
+the web package; `make installer-test` and package lifecycle fixtures exercise
+the controlled installer/package contract. These are not host-network proof.
+Claims about DHCP, DNS, mihomo traffic, nftables forwarding, TUN, rollback, or
+a real host network require the corresponding Linux lab gate:
 `make linux-lab-test` for DHCP/DNS/NAT/rollback, and
 `make linux-lab-test-tun` for no-explicit-proxy HTTPS traffic observed in the
 mihomo TUN log. Both gates require a Linux host with root network namespaces.
+Orb arm64 package installation and real QA-host acceptance are separate evidence
+gates, not implied by a successful build or HTTPS startup smoke.
 
 Use [docs/linux-migration.md](../../../docs/linux-migration.md) for migration
 semantics and manual mapping requirements.

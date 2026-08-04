@@ -24,8 +24,17 @@
 
 ## 如何安装和访问网关？
 
-安装匹配架构的 Release `.deb`，检查 `/etc/opensurge/config.yaml` 后，在本机 TTY 执行
-`sudo opensurge-setup init --username admin`，再启用 `opensurge-gateway.socket` 与
-`opensurge-control.service`。控制面只在配置的 LAN `management.listen` 地址上提供 HTTPS，
-采用单管理员登录。初始化会生成有效期十年的自签名证书；之后可用
-`opensurge-setup replace-certificate --cert ... --key ...` 替换为 SAN 包含监听 IP 的证书。
+下载 Release 安装器，并在有可写控制 TTY 的会话中运行：
+
+```sh
+curl -fLO https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install
+sudo bash ./opensurge-install
+```
+
+安装器会校验匹配架构的 `.deb`，在没有已有配置时生成安全的 `same_lan` 控制平面配置，
+启动服务，并且只在控制 TTY 显示一次性 `admin` 密码。已有配置和管理员状态会保留。
+固定版本使用 `--version vX.Y.Z`；离线介质使用带 `SHA256SUMS` 的
+`--deb /path/package.deb`。直接执行 `dpkg -i` 或 `apt install ./package.deb` 会被故意拒绝。
+控制面只在配置的 LAN `management.listen` 地址上提供 HTTPS，采用单管理员登录。安装器生成
+有效期十年的自签名证书；之后可用 `opensurge-setup replace-certificate --cert ... --key ...`
+替换为 SAN 包含监听 IP 的证书。

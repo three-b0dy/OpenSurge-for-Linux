@@ -6,6 +6,16 @@ and the named OpenSurge nftables table. The root
 `opensurge-gateway.service` owns these changes; the `opensurge` control service
 uses its restricted Unix socket for fixed privileged actions.
 
+This lifecycle starts only after the release installer has completed its
+separate host-ownership transaction. The standalone `opensurge-install` is the
+supported package entry point; its marker-guarded package rejects direct
+`dpkg`/APT installation and unattended upgrades. On a fresh host, the installer
+uses the literal IPv4 default-route interface and source address to render only
+a non-disruptive `same_lan` control-plane configuration. DHCP and transparent
+mode stay off. It does not translate `lan0`/`wan0` example names, create a
+VLAN, add addresses, or infer an isolated-LAN or same-Wi-Fi-DHCP topology.
+Existing OpenSurge configuration and administrator state are preserved.
+
 Start order is preflight, candidate artifact validation, persisted startup
 state, IPv4 forwarding, mihomo, dnsmasq when the selected mode needs it, and
 finally the OpenSurge nftables table. Stop and rollback run the inverse order
@@ -31,4 +41,7 @@ Before this gateway lifecycle begins, the release installer performs the
 separate host DNS ownership transaction described in
 [Linux installer DNS ownership](linux-installer-lifecycle.md). It preserves
 the prior resolver shape and only suppresses the generic host DNS services
-whose previous state it records.
+whose previous state it records. A package/config/startup smoke, including a
+responding Control API status endpoint, is not evidence that this gateway
+lifecycle has carried downstream traffic; apply the Linux lab and real-host
+validation boundary documented here.

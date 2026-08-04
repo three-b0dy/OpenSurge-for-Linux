@@ -5,6 +5,23 @@ transaction. It does not assume that an arbitrary port-53 listener belongs to
 OpenSurge, and it does not replace a resolver unless it has a safe upstream to
 write first.
 
+The standalone `opensurge-install` asset is the sole supported Debian/Ubuntu
+entry point. It must run as root with a writable controlling TTY, downloads or
+accepts an offline architecture-matched package only after `SHA256SUMS`
+verification, and uses the package-manager marker only for its own child
+operation. The package rejects direct `dpkg -i`, `apt install ./package.deb`,
+and unattended upgrade paths. The installer displays a generated one-time
+`admin` password only on the controlling TTY; it never writes that password to
+arguments, environment, state, or logs.
+
+For a fresh host, the installer renders only `same_lan` from the IPv4 default
+route's literal interface and source address, keeping DHCP and transparent mode
+off. It preserves existing OpenSurge configuration and administrator state and
+does not infer an isolated-LAN or same-Wi-Fi-DHCP topology. An isolated-LAN
+run requires explicit existing downstream/upstream interface names, a
+downstream address already configured on the host, and a CIDR (plus an explicit
+DHCP range for non-`/24` networks); it never creates a VLAN or adds an address.
+
 ## Resolver handoff
 
 When `systemd-resolved.service` is active, the installer selects the first

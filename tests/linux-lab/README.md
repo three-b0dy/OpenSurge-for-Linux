@@ -44,6 +44,9 @@ without an explicit proxy reaches the controlled origin. The TUN request must
 also produce `example.com:443` in `logs/mihomo.log`, which is the transparent
 connection evidence; the gate prints `transparent TUN log observed` before
 cleanup. The controlled origin listens on port 443 in the upstream namespace.
+DNS is asserted separately with `dig`. The HTTPS request then pins that test
+answer with `curl --resolve`; the lab deliberately does not depend on a distro
+curl build supporting `--dns-servers`.
 
 Every run saves disposable configs, logs, namespace addresses/routes, and the
 final ruleset under `artifacts/linux-lab/`. Namespace deletion and runtime

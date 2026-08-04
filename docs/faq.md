@@ -28,11 +28,21 @@ listen address, then run `config validate`.
 
 ## How do I install and access the gateway?
 
-Install the matching Release `.deb`, review `/etc/opensurge/config.yaml`, then
-run `sudo opensurge-setup init --username admin` from a local TTY and enable
-`opensurge-gateway.socket` plus `opensurge-control.service`. The control plane
-serves HTTPS only on the configured LAN `management.listen` address and uses a
-single administrator login. Initialization creates a ten-year self-signed
-certificate; replace it later with
-`opensurge-setup replace-certificate --cert ... --key ...` using a certificate
-whose SAN includes the listener IP.
+Download the Release installer and run it from a session with a writable
+controlling TTY:
+
+```sh
+curl -fLO https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install
+sudo bash ./opensurge-install
+```
+
+It verifies the matching `.deb`, creates a safe fresh `same_lan` control-plane
+configuration when none exists, starts the services, and displays the one-time
+`admin` password only on that TTY. Existing config and admin state are kept.
+Use `--version vX.Y.Z` for an exact release, or `--deb /path/package.deb` with
+its `SHA256SUMS` for offline media. Direct `dpkg -i` and `apt install
+./package.deb` are deliberately rejected. The control plane serves HTTPS only
+on the configured LAN `management.listen` address and uses a single
+administrator login. The installer creates a ten-year self-signed certificate;
+replace it later with `opensurge-setup replace-certificate --cert ... --key
+...` using a certificate whose SAN includes the listener IP.
