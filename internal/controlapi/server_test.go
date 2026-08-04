@@ -150,24 +150,6 @@ func TestSourceRequestUsesMihomoCompatibleUserAgent(t *testing.T) {
 	}
 }
 
-func TestBootstrapIsOneTimeAndCreatesSession(t *testing.T) {
-	server := newTestServer(t)
-	bootstrap := server.BootstrapURL()
-	request := httptest.NewRequest(http.MethodGet, bootstrap, nil)
-	request.Host = "127.0.0.1:61767"
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusFound || len(response.Result().Cookies()) == 0 {
-		t.Fatalf("first bootstrap status=%d cookies=%v", response.Code, response.Result().Cookies())
-	}
-
-	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("second bootstrap status=%d", response.Code)
-	}
-}
-
 func TestAuthenticatedWebSessionSlidesIdleExpiry(t *testing.T) {
 	server := newTestServer(t)
 	const session = "browser-session"
@@ -194,7 +176,7 @@ func TestAuthenticatedWebSessionSlidesIdleExpiry(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != "opensurge_session" || cookies[0].Value != session {
 		t.Fatalf("renewal cookies=%v", cookies)
 	}
-	if cookies[0].MaxAge != int(webSessionIdleTimeout/time.Second) || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+	if cookies[0].MaxAge != int(webSessionIdleTimeout/time.Second) || !cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("renewal cookie=%#v", cookies[0])
 	}
 }
@@ -220,25 +202,6 @@ func TestExpiredWebSessionIsRejectedWithoutRenewal(t *testing.T) {
 	server.mu.Unlock()
 	if exists {
 		t.Fatal("expired session was not removed")
-	}
-}
-
-func TestBootstrapAllowsOnlyKnownWebPaths(t *testing.T) {
-	server := newTestServer(t)
-	request := httptest.NewRequest(http.MethodGet, server.bootstrapURLFor("recovery"), nil)
-	request.Host = "127.0.0.1:61767"
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Header().Get("Location") != "/network" {
-		t.Fatalf("recovery bootstrap location=%q", response.Header().Get("Location"))
-	}
-
-	request = httptest.NewRequest(http.MethodGet, server.bootstrapURLFor("//evil.example"), nil)
-	request.Host = "127.0.0.1:61767"
-	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Header().Get("Location") != "/dashboard" {
-		t.Fatalf("unknown bootstrap location=%q", response.Header().Get("Location"))
 	}
 }
 
@@ -642,7 +605,7 @@ func TestControlConfigCanCorrectPreparedRecoveryBeforeNetworkChanges(t *testing.
 	payload, _ := json.Marshal(current)
 	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:61767/api/v1/config", bytes.NewReader(payload))
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+current.Revision+`"`)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -663,23 +626,6 @@ func TestSafeDialRejectsLoopback(t *testing.T) {
 	_, err := safeDialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", "443"))
 	if err == nil {
 		t.Fatal("safeDialContext() accepted loopback")
-	}
-}
-
-func TestStoreTokenPermissions(t *testing.T) {
-	store := NewStore(t.TempDir())
-	if err := store.Ensure(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Token(); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(filepath.Join(store.Dir(), "control-token"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("token mode=%o", info.Mode().Perm())
 	}
 }
 
@@ -902,7 +848,7 @@ func TestSourceApplyDelegatesAuthoritativeEngineValidationToRunner(t *testing.T)
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/sources/"+source.ID+"/apply", nil)
 	request.Host = "127.0.0.1:61767"
 	request.SetPathValue("id", source.ID)
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+revision+`"`)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -934,7 +880,7 @@ func TestDevicePolicyUsesOptimisticRevisionAndConfigurationRunner(t *testing.T) 
 	}
 	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:61767/api/v1/device-policy", strings.NewReader(`{"devices":[],"profiles":[],"templates":[],"rule_sets":[]}`))
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+document.Revision+`"`)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -990,7 +936,7 @@ func TestControlConfigUsesRevisionAndAppliesTopology(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:61767/api/v1/config", bytes.NewReader(requestBody))
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("If-Match", `"`+current.Revision+`"`)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1026,7 +972,7 @@ func TestGatewayReloadPreservesActiveTakeoverStage(t *testing.T) {
 	server.runner = runner
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "reload-success")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1073,7 +1019,7 @@ func TestGatewayRestartMihomoPreservesActiveTakeoverStage(t *testing.T) {
 	server.runner = runner
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/restart-mihomo", nil)
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "restart-mihomo-success")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1105,7 +1051,7 @@ func TestGatewayStopAcceptsSkippedClientValidation(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/stop", nil)
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "stop-after-client-skip")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1141,7 +1087,7 @@ func TestGatewayReloadStopFailurePreservesActiveTakeoverStage(t *testing.T) {
 	})
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "reload-stop-failed")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1182,7 +1128,7 @@ func TestGatewayReloadFailureAfterStopReturnsToRestartableTakeoverStage(t *testi
 	})
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:61767/api/v1/gateway/reload", nil)
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "reload-failed")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
@@ -1652,8 +1598,19 @@ func (f *fakeNetworkRunner) ProbeDHCP(_ context.Context, _, _ string, _ time.Dur
 func performAuthorized(server *Server, method, path string, body []byte) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, "http://127.0.0.1:61767"+path, bytes.NewReader(body))
 	request.Host = "127.0.0.1:61767"
-	request.Header.Set("Authorization", "Bearer "+server.token)
+	authorizeTestRequest(server, request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	return response
+}
+
+func authorizeTestRequest(server *Server, request *http.Request) {
+	const session = "test-session"
+	server.mu.Lock()
+	server.sessions[session] = time.Now().Add(webSessionIdleTimeout)
+	server.mu.Unlock()
+	request.AddCookie(&http.Cookie{Name: "opensurge_session", Value: session, Path: "/"})
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		request.Header.Set("Origin", "http://127.0.0.1:61767")
+	}
 }

@@ -38,7 +38,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	fmt.Printf("OpenSurge Control API: %s\n", *addr)
-	fmt.Printf("Open Web GUI: %s\n", server.BootstrapURL())
+	fmt.Printf("Open Web GUI: %s/\n", server.URL())
 	if err := server.Serve(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

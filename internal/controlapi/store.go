@@ -1,8 +1,6 @@
 package controlapi
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,28 +28,6 @@ func (s *Store) Ensure() error {
 		}
 	}
 	return nil
-}
-
-func (s *Store) Token() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	path := filepath.Join(s.dir, "control-token")
-	data, err := os.ReadFile(path)
-	if err == nil {
-		return string(data), nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(buf)
-	if err := writeAtomic(path, []byte(token), 0o600); err != nil {
-		return "", err
-	}
-	return token, nil
 }
 
 func (s *Store) Recovery() (RecoveryState, error) {

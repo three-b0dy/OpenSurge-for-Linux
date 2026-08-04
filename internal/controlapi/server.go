@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,6 +34,7 @@ type Options struct {
 	Runner            ActionRunner
 	NetworkRunner     NetworkRunner
 	ConfigRunner      ConfigurationRunner
+	AdminStore        AdminStore
 	DiscoverNetwork   func(context.Context, string, string) (linuxnetwork.Snapshot, error)
 	ListInterfaces    func(context.Context) ([]linuxnetwork.InterfaceOption, error)
 	DiscoverNeighbors func(context.Context, string) ([]linuxnetwork.Neighbor, error)
@@ -56,25 +56,25 @@ type Server struct {
 	pingRouter        func(context.Context, string) error
 	static            http.Handler
 	credentials       SourceCredentialStore
+	adminStore        AdminStore
 	fetchConnections  func(context.Context, config.Config) (mihomo.ConnectionsSnapshot, error)
 	fetchProxyHealth  func(context.Context, config.Config) (mihomo.ProxyHealthSnapshot, error)
 	measureProxyDelay func(context.Context, config.Config, string, string, time.Duration) mihomo.ProxyDelayResult
 	probeConnectivity func(context.Context, config.Config, ConnectivityTarget) ConnectivityResult
 	trafficSampler    *trafficRateSampler
-	token             string
 	baseURL           string
 
-	mu         sync.Mutex
-	sessions   map[string]time.Time
-	bootstraps map[string]bootstrapGrant
-}
-
-type bootstrapGrant struct {
-	expires time.Time
-	path    string
+	mu            sync.Mutex
+	sessions      map[string]time.Time
+	loginFailures map[string][]time.Time
 }
 
 const webSessionIdleTimeout = 12 * time.Hour
+
+const (
+	loginFailureWindow = 15 * time.Minute
+	maxLoginFailures   = 5
+)
 
 func New(options Options) (*Server, error) {
 	if options.ConfigPath == "" {
@@ -98,10 +98,6 @@ func New(options Options) (*Server, error) {
 	if err := store.Ensure(); err != nil {
 		return nil, err
 	}
-	token, err := store.Token()
-	if err != nil {
-		return nil, err
-	}
 	if options.Runner == nil {
 		options.Runner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
 	}
@@ -118,6 +114,9 @@ func New(options Options) (*Server, error) {
 		} else {
 			options.ConfigRunner = HelperClient{SocketPath: "/run/opensurge/helper.sock"}
 		}
+	}
+	if options.AdminStore == nil {
+		options.AdminStore = NewFileAdminStore(store.Dir())
 	}
 	if options.DiscoverNetwork == nil {
 		options.DiscoverNetwork = linuxnetwork.Discover
@@ -156,35 +155,24 @@ func New(options Options) (*Server, error) {
 		pingRouter:        options.PingRouter,
 		static:            options.Static,
 		credentials:       options.Credentials,
+		adminStore:        options.AdminStore,
 		fetchConnections:  mihomo.FetchConnections,
 		fetchProxyHealth:  mihomo.FetchProxyHealth,
 		measureProxyDelay: mihomo.MeasureProxyDelay,
 		probeConnectivity: probeConnectivityTarget,
 		trafficSampler:    newTrafficRateSampler(),
-		token:             token,
 		baseURL:           "http://" + options.Addr,
 		sessions:          map[string]time.Time{},
-		bootstraps:        map[string]bootstrapGrant{},
+		loginFailures:     map[string][]time.Time{},
 	}, nil
-}
-
-func (s *Server) BootstrapURL() string {
-	return s.bootstrapURLFor("dashboard")
-}
-
-func (s *Server) bootstrapURLFor(path string) string {
-	path = allowedWebPath(path)
-	code := randomToken(24)
-	s.mu.Lock()
-	s.bootstraps[code] = bootstrapGrant{expires: time.Now().Add(30 * time.Second), path: path}
-	s.mu.Unlock()
-	return s.baseURL + "/bootstrap?code=" + code
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /bootstrap", s.exchangeBootstrap)
-	mux.HandleFunc("POST /api/v1/session/bootstrap", s.handleSessionBootstrap)
+	mux.HandleFunc("POST /api/v1/auth/setup", s.handleAuthSetup)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
 	mux.Handle("GET /api/v1/overview", s.auth(http.HandlerFunc(s.handleOverview)))
 	mux.Handle("GET /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
 	mux.Handle("PUT /api/v1/config", s.auth(http.HandlerFunc(s.handleControlConfig)))
@@ -360,29 +348,11 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		bearerOK := secureEqual(bearer, s.token)
-		sessionOK := false
-		if cookie, err := r.Cookie("opensurge_session"); err == nil {
-			now := time.Now()
-			s.mu.Lock()
-			expires, exists := s.sessions[cookie.Value]
-			if exists && now.Before(expires) {
-				sessionOK = true
-				s.sessions[cookie.Value] = now.Add(webSessionIdleTimeout)
-			} else if exists {
-				delete(s.sessions, cookie.Value)
-			}
-			s.mu.Unlock()
-			if sessionOK {
-				setWebSessionCookie(w, cookie.Value, now)
-			}
-		}
-		if !bearerOK && !sessionOK {
-			writeError(w, http.StatusUnauthorized, "authentication_required", "open the Web GUI using an authenticated launcher link")
+		if !s.sessionAuthenticated(w, r) {
+			writeError(w, http.StatusUnauthorized, "authentication_required", "administrator login is required")
 			return
 		}
-		if !bearerOK && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			origin := r.Header.Get("Origin")
 			if origin != s.baseURL {
 				writeError(w, http.StatusForbidden, "origin_rejected", "mutation origin is not allowed")
@@ -393,27 +363,6 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) exchangeBootstrap(w http.ResponseWriter, r *http.Request) {
-	code := r.URL.Query().Get("code")
-	s.mu.Lock()
-	grant, ok := s.bootstraps[code]
-	if ok {
-		delete(s.bootstraps, code)
-	}
-	s.mu.Unlock()
-	if !ok || time.Now().After(grant.expires) {
-		http.Error(w, "Bootstrap link is invalid or expired", http.StatusUnauthorized)
-		return
-	}
-	session := randomToken(32)
-	now := time.Now()
-	s.mu.Lock()
-	s.sessions[session] = now.Add(webSessionIdleTimeout)
-	s.mu.Unlock()
-	setWebSessionCookie(w, session, now)
-	http.Redirect(w, r, "/"+grant.path, http.StatusFound)
-}
-
 func setWebSessionCookie(w http.ResponseWriter, session string, now time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "opensurge_session",
@@ -422,39 +371,204 @@ func setWebSessionCookie(w http.ResponseWriter, session string, now time.Time) {
 		Expires:  now.Add(webSessionIdleTimeout),
 		MaxAge:   int(webSessionIdleTimeout / time.Second),
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
 }
 
-func (s *Server) handleSessionBootstrap(w http.ResponseWriter, r *http.Request) {
-	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !secureEqual(bearer, s.token) {
-		writeError(w, http.StatusUnauthorized, "authentication_required", "native launcher token is invalid")
+func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, s.baseURL) {
+		writeError(w, http.StatusForbidden, "origin_rejected", "authentication origin is not allowed")
 		return
 	}
 	var request struct {
-		Path string `json:"path"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
-	if r.ContentLength > 0 {
-		if err := decodeJSON(r, &request, 16<<10); err != nil {
+	if err := decodeJSON(r, &request, 16<<10); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	s.purgeAuthState(time.Now())
+	if err := s.adminStore.Set(request.Username, request.Password); err != nil {
+		if errors.Is(err, ErrAdminAlreadyInitialized) {
+			writeError(w, http.StatusConflict, "admin_initialized", "administrator setup has already been completed")
+			return
+		}
+		if strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "at least 12") {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "setup_failed", "administrator setup failed")
+		return
 	}
-	url := s.bootstrapURLFor(request.Path)
-	writeJSON(w, http.StatusCreated, BootstrapResponse{SchemaVersion: SchemaVersion, URL: url, ExpiresAt: time.Now().Add(30 * time.Second).UTC()})
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func allowedWebPath(value string) string {
-	switch value {
-	case "network", "recovery":
-		return "network"
-	case "sources", "devices", "policies", "connectivity", "diagnostics":
-		return value
-	default:
-		return "dashboard"
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, s.baseURL) {
+		writeError(w, http.StatusForbidden, "origin_rejected", "authentication origin is not allowed")
+		return
+	}
+	ip := requestSourceIP(r)
+	if s.loginLocked(ip) {
+		writeError(w, http.StatusTooManyRequests, "login_rate_limited", "login temporarily locked for this source address")
+		return
+	}
+	var request struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &request, 16<<10); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.adminStore.Authenticate(request.Username, request.Password); err != nil {
+		if errors.Is(err, ErrAdminNotInitialized) {
+			writeError(w, http.StatusConflict, "setup_required", "administrator setup is required")
+			return
+		}
+		if errors.Is(err, ErrInvalidCredentials) {
+			s.recordLoginFailure(ip, time.Now())
+			writeError(w, http.StatusUnauthorized, "authentication_required", "username or password is incorrect")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "login_failed", "administrator authentication failed")
+		return
+	}
+	s.clearLoginFailures(ip)
+	session := randomToken(32)
+	now := time.Now()
+	s.mu.Lock()
+	s.purgeAuthStateLocked(now)
+	s.sessions[session] = now.Add(webSessionIdleTimeout)
+	s.mu.Unlock()
+	setWebSessionCookie(w, session, now)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r, s.baseURL) {
+		writeError(w, http.StatusForbidden, "origin_rejected", "authentication origin is not allowed")
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	s.purgeAuthStateLocked(now)
+	if cookie, err := r.Cookie("opensurge_session"); err == nil {
+		delete(s.sessions, cookie.Value)
+	}
+	s.mu.Unlock()
+	clearWebSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	initialized, err := s.adminStore.Initialized()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "auth_status_failed", "administrator status is unavailable")
+		return
+	}
+	authenticated := s.sessionAuthenticated(w, r)
+	writeJSON(w, http.StatusOK, AuthStatus{Initialized: initialized, Authenticated: authenticated})
+}
+
+func (s *Server) sessionAuthenticated(w http.ResponseWriter, r *http.Request) bool {
+	cookie, err := r.Cookie("opensurge_session")
+	if err != nil || cookie.Value == "" {
+		s.purgeAuthState(time.Now())
+		return false
+	}
+	now := time.Now()
+	s.mu.Lock()
+	s.purgeAuthStateLocked(now)
+	expires, ok := s.sessions[cookie.Value]
+	if ok && now.Before(expires) {
+		s.sessions[cookie.Value] = now.Add(webSessionIdleTimeout)
+	}
+	s.mu.Unlock()
+	if !ok || !now.Before(expires) {
+		return false
+	}
+	setWebSessionCookie(w, cookie.Value, now)
+	return true
+}
+
+func (s *Server) purgeAuthState(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeAuthStateLocked(now)
+}
+
+func (s *Server) purgeAuthStateLocked(now time.Time) {
+	for session, expires := range s.sessions {
+		if !now.Before(expires) {
+			delete(s.sessions, session)
+		}
+	}
+	for ip, failures := range s.loginFailures {
+		kept := failures[:0]
+		for _, failure := range failures {
+			if now.Sub(failure) < loginFailureWindow {
+				kept = append(kept, failure)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.loginFailures, ip)
+		} else {
+			s.loginFailures[ip] = kept
+		}
 	}
 }
+
+func (s *Server) loginLocked(ip string) bool {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeAuthStateLocked(now)
+	return len(s.loginFailures[ip]) >= maxLoginFailures
+}
+
+func (s *Server) recordLoginFailure(ip string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.purgeAuthStateLocked(now)
+	s.loginFailures[ip] = append(s.loginFailures[ip], now)
+}
+
+func (s *Server) clearLoginFailures(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.loginFailures, ip)
+}
+
+func requestSourceIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+		return host
+	}
+	if value := strings.TrimSpace(r.RemoteAddr); value != "" {
+		return value
+	}
+	return "unknown"
+}
+
+func sameOrigin(r *http.Request, expected string) bool {
+	return r.Header.Get("Origin") == expected
+}
+
+func clearWebSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "opensurge_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func (s *Server) URL() string { return s.baseURL }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	overview, err := s.overview(r.Context())
@@ -1881,13 +1995,6 @@ func randomToken(size int) string {
 		panic(err)
 	}
 	return hex.EncodeToString(data)
-}
-
-func secureEqual(a, b string) bool {
-	if len(a) != len(b) || len(a) == 0 {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func errorString(err error) string {

@@ -343,12 +343,6 @@ type DevicePolicyResponse struct {
 	Policy        device.PolicySet `json:"policy"`
 }
 
-type BootstrapResponse struct {
-	SchemaVersion int       `json:"schema_version"`
-	URL           string    `json:"url"`
-	ExpiresAt     time.Time `json:"expires_at"`
-}
-
 type StateEvent struct {
 	SchemaVersion        int           `json:"schema_version"`
 	Revision             string        `json:"revision"`
