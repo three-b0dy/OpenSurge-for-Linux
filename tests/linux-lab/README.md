@@ -36,9 +36,14 @@ sudo -v && make linux-lab-test-tun
 
 The regular gate checks the client DHCP lease, gateway DNS, direct HTTPS NAT,
 the named `inet opensurge` table, normal stop cleanup, and rollback after a
-deliberately failed nftables load. The TUN gate additionally requires a fake-IP
-DNS answer and a client HTTPS request with no explicit proxy; the request uses
-the controlled origin in the upstream namespace.
+deliberately failed nftables load. The TUN gate additionally checks that the
+client default route and DHCP-advertised DNS point at the gateway, proxy environment variables
+are removed and no client proxy setting is present, mihomo reports
+`opensurge-tun` enabled through its loopback API, and an HTTPS request made
+without an explicit proxy reaches the controlled origin. The TUN request must
+also produce `example.com:443` in `logs/mihomo.log`, which is the transparent
+connection evidence; the gate prints `transparent TUN log observed` before
+cleanup. The controlled origin listens on port 443 in the upstream namespace.
 
 Every run saves disposable configs, logs, namespace addresses/routes, and the
 final ruleset under `artifacts/linux-lab/`. Namespace deletion and runtime

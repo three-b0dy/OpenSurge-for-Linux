@@ -11,7 +11,7 @@ LAN_IP="192.168.50.1"
 UPSTREAM_PREFIX="198.51.100.0/24"
 UPSTREAM_GW_IP="198.51.100.1"
 UPSTREAM_SERVER_IP="198.51.100.2"
-ORIGIN_PORT="18443"
+ORIGIN_PORT="443"
 PROXY_PORT="18080"
 
 IP_BIN=""
@@ -140,8 +140,12 @@ case "${reason:-}" in
     address="${new_ip_address:-${ip:-}}"
     mask="${new_subnet_mask:-${subnet:-255.255.255.0}}"
     router="${new_routers:-${router:-}}"
+    dns_servers="${new_domain_name_servers:-${dns:-}}"
     [[ -n "$address" ]] || exit 0
     prefix="$(prefix_from_mask "$mask")"
+    if [[ -n "${OPENSURGE_DHCP_EVIDENCE_FILE:-}" ]]; then
+      printf 'address=%s\nrouter=%s\ndns=%s\n' "$address" "$router" "$dns_servers" >"$OPENSURGE_DHCP_EVIDENCE_FILE"
+    fi
     ip addr flush dev "$interface" scope global
     ip addr add "$address/$prefix" dev "$interface"
     if [[ -n "$router" ]]; then
@@ -322,16 +326,19 @@ client_dhcp_ready() {
   [[ "$CLIENT_IP" =~ ^192\.168\.50\.[0-9]+$ ]] || return 1
   local octet="${CLIENT_IP##*.}"
   ((octet >= 100 && octet <= 200)) || return 1
-  awk -v mac="$CLIENT_MAC" -v ip="$CLIENT_IP" '$2 == mac && $3 == ip { found=1 } END { exit !found }' "$RUNTIME_DIR/dnsmasq.leases" 2>/dev/null
+  awk -v mac="$CLIENT_MAC" -v ip="$CLIENT_IP" '$2 == mac && $3 == ip { found=1 } END { exit !found }' "$RUNTIME_DIR/dnsmasq.leases" 2>/dev/null || return 1
+  grep -Eq '^dns=.*192\.168\.50\.1' "$RUNTIME_DIR/dhcp-evidence" 2>/dev/null
 }
 
 obtain_client_lease() {
   if [[ "$DHCP_CLIENT_BIN" == *"dhclient" ]]; then
-    client_exec "$DHCP_CLIENT_BIN" -4 -1 -v \
+    client_exec env "OPENSURGE_DHCP_EVIDENCE_FILE=$RUNTIME_DIR/dhcp-evidence" \
+      "$DHCP_CLIENT_BIN" -4 -1 -v \
       -sf "$DHCP_SCRIPT" -lf "$RUNTIME_DIR/dhclient.leases" \
       -pf "$RUNTIME_DIR/dhclient.pid" eth0 >/dev/null 2>&1
 	else
-	    client_exec "$DHCP_CLIENT_BIN" -n -q -i eth0 -s "$DHCP_SCRIPT" \
+	    client_exec env "OPENSURGE_DHCP_EVIDENCE_FILE=$RUNTIME_DIR/dhcp-evidence" \
+      "$DHCP_CLIENT_BIN" -n -q -i eth0 -s "$DHCP_SCRIPT" \
       -p "$RUNTIME_DIR/udhcpc.pid" >/dev/null 2>&1
   fi
   wait_for 20 client_dhcp_ready || die "client did not receive a DHCP lease"
@@ -349,9 +356,16 @@ assert_client_dns() {
   fi
 }
 
+client_without_proxy() {
+  client_exec env \
+    -u http_proxy -u https_proxy -u ftp_proxy -u all_proxy -u no_proxy \
+    -u HTTP_PROXY -u HTTPS_PROXY -u FTP_PROXY -u ALL_PROXY -u NO_PROXY \
+    "$@"
+}
+
 assert_client_nat() {
   local response
-  response="$(client_exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  response="$(client_without_proxy \
     "$CURL_BIN" --noproxy '*' --insecure --fail --show-error --max-time 15 \
     --resolve "example.com:$ORIGIN_PORT:$UPSTREAM_SERVER_IP" \
     "https://example.com:$ORIGIN_PORT/nat" 2>/dev/null)" || die "client HTTPS NAT request failed"
@@ -359,13 +373,62 @@ assert_client_nat() {
     die "NAT endpoint observed an unexpected peer: $response"
 }
 
-assert_client_tun_https() {
+assert_client_default_route() {
+  client_exec "$IP_BIN" -4 route show default | grep -Eq \
+    "^default via $LAN_IP dev " || die "client default route does not point to gateway $LAN_IP"
+}
+
+assert_no_explicit_proxy() {
+  local proxy_env
+  proxy_env="$(client_without_proxy env | grep -Ei '(^|_)(http|https|ftp|all|no)_proxy=' || true)"
+  [[ -z "$proxy_env" ]] || die "client retained proxy environment: $proxy_env"
+  if grep -Eiq '^[[:space:]]*(http|https|ftp|all|no)_proxy[[:space:]:=]' "$CONFIG_FILE"; then
+    die "lab config contains an explicit client proxy setting"
+  fi
+  echo "no explicit proxy environment or client config observed"
+}
+
+mihomo_tun_ready() {
+  local body
+  body="$(gateway_exec "$CURL_BIN" -fsS --max-time 2 http://127.0.0.1:19090/configs 2>/dev/null)" || return 1
+  printf '%s\n' "$body" | grep -Eq \
+    '"tun"[[:space:]]*:[[:space:]]*\{[^}]*"enable"[[:space:]]*:[[:space:]]*true[^}]*"device"[[:space:]]*:[[:space:]]*"opensurge-tun"'
+}
+
+assert_mihomo_tun_ready() {
+  wait_for 20 mihomo_tun_ready || die "mihomo did not report an enabled opensurge-tun device"
+  echo "mihomo TUN ready: opensurge-tun"
+}
+
+assert_tun_connection_log() {
+  local log_file="$RUNTIME_DIR/logs/mihomo.log"
+  local attempt
+  for ((attempt = 0; attempt < 20; attempt++)); do
+    if [[ -f "$log_file" ]] && grep -Fq 'example.com:443' "$log_file"; then
+      echo "transparent TUN log observed for example.com:443"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "mihomo did not log transparent TUN traffic for example.com:443" >&2
+  tail -80 "$log_file" >&2 2>/dev/null || true
+  return 1
+}
+
+assert_tun_flow() {
   local response
-  response="$(client_exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-    "$CURL_BIN" --dns-servers "$LAN_IP" --noproxy '*' --insecure --fail --show-error --max-time 15 \
-    "https://example.com:$ORIGIN_PORT/nat" 2>/dev/null)" || die "client no-proxy TUN HTTPS request failed"
+  assert_mihomo_tun_ready
+  assert_client_default_route
+  assert_client_dns
+  assert_no_explicit_proxy
+  response="$(client_without_proxy \
+    "$CURL_BIN" -q --dns-servers "$LAN_IP" --insecure --fail --show-error --max-time 15 \
+    "https://example.com/" 2>/dev/null)" || die "client no-proxy TUN HTTPS request failed"
+  printf '%s\n' "$response" | grep -qx "OpenSurge Linux lab origin" ||
+    die "TUN HTTPS request did not reach the controlled origin: $response"
   printf '%s\n' "$response" | grep -qx "remote=$UPSTREAM_GW_IP" ||
     die "TUN endpoint observed an unexpected peer: $response"
+  assert_tun_connection_log || die "TUN HTTPS request had no mihomo connection log evidence"
 }
 
 assert_nft_loaded() {
@@ -385,6 +448,7 @@ assert_cleanup() {
   fi
   [[ ! -e "$RUNTIME_DIR/state.json" ]] || die "runtime state remained after cleanup"
   assert_forwarding_restored
+  echo "Linux lab cleanup verified: nftables table absent, forwarding restored, runtime state removed"
 }
 
 start_gateway() {
@@ -420,10 +484,10 @@ run_success_case() {
   start_gateway "$ORIGINAL_PATH"
   assert_nft_loaded
   obtain_client_lease
-  assert_client_dns
   if [[ "$LAB_MODE" == "tun" ]]; then
-    assert_client_tun_https
+    assert_tun_flow
   else
+    assert_client_dns
     assert_client_nat
   fi
   stop_gateway
