@@ -34,5 +34,9 @@ opensurge config validate --config candidate.yaml
 
 iproute2 负责接口、地址、路由和邻居检查；sysctl 管理 IPv4 forwarding；dnsmasq 提供
 需要的 DHCP/DNS；nftables 只负责 OpenSurge 自己的命名表；systemd 管理 root 网关服务和
-非特权 LAN HTTPS 控制服务。GitHub Release 提供 amd64/arm64 `.deb`；安装后用本机 TTY 的
-`opensurge-setup init` 创建单管理员登录与十年自签名证书。
+非特权 LAN HTTPS 控制服务。GitHub Release 提供 `opensurge-install` 和 amd64/arm64 `.deb`；
+唯一受支持的安装路径是在有可写控制 TTY 的会话中执行
+`sudo bash ./opensurge-install`。安装器会校验包、创建单管理员登录和十年自签名证书，并仅在
+该 TTY 显示一次性密码；直接安装 `.deb` 会被拒绝。之后可以用
+`opensurge-setup replace-certificate` 替换为自有证书，或在控制 TTY 上用
+`opensurge-setup reset-password --username admin` 恢复管理员访问。
