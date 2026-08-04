@@ -69,6 +69,20 @@ func TestValidateAcceptsSameLANGatewayMode(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsSameLANControlPlaneWithTransparentOff(t *testing.T) {
+	cfg := Default()
+	cfg.Gateway.Mode = GatewayModeSameLAN
+	cfg.Gateway.Interface = "ens18"
+	cfg.Gateway.LANIP = "192.0.2.10"
+	cfg.Gateway.UpstreamInterface = "ens18"
+	cfg.DHCP.Enabled = false
+	cfg.Transparent.Mode = TransparentModeOff
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestPrepareDevicePolicyPausesIPOnlyDevicesOutsideSameLAN(t *testing.T) {
 	policy := device.PolicySet{
 		Profiles: []device.Profile{{ID: "home", DefaultPolicies: []string{"DIRECT"}}},
@@ -127,13 +141,6 @@ func TestValidateRejectsInvalidSameLANConfig(t *testing.T) {
 				cfg.DHCP.Enabled = true
 			},
 			want: "dhcp.enabled: false",
-		},
-		{
-			name: "transparent off",
-			edit: func(cfg *Config) {
-				cfg.Transparent.Mode = TransparentModeOff
-			},
-			want: `transparent.mode: "tun"`,
 		},
 	}
 

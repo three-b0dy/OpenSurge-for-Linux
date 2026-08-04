@@ -1,3 +1,8 @@
+# This is an isolated-LAN sample: lan0 and wan0 are illustrative Linux link
+# names, not aliases. Use the exact names reported by `ip link` on your host.
+# The release installer instead creates a first-run same_lan control-plane
+# configuration from the IPv4 default-route interface unless isolated inputs
+# are supplied explicitly.
 gateway:
   mode: "isolated_lan"
   interface: "lan0"

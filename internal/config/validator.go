@@ -95,7 +95,7 @@ func validate(cfg Config, checkDevicePolicy bool) error {
 	if err := validateTransparent(cfg.Transparent); err != nil {
 		return err
 	}
-	if cfg.Gateway.SameLAN() {
+	if cfg.Gateway.Mode == GatewayModeSameWiFiDHCP {
 		if cfg.Transparent.Mode != TransparentModeTUN {
 			return fmt.Errorf("gateway.mode %s requires transparent.mode: \"tun\"", cfg.Gateway.Mode)
 		}

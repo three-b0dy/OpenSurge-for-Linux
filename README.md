@@ -25,6 +25,18 @@ DHCP/DNS，mihomo TUN 提供透明代理，nftables 提供 OpenSurge 专属的�
 `isolated_lan` 不提供下游 IPv6 配置并丢弃下游 IPv6 forwarding。其余模式
 会提示未托管的 IPv6 路径，不把 IPv6 绕行误报为已验证。
 
+### 发布安装器的初始拓扑
+
+首次运行发布安装器时，它只会根据 IPv4 默认路由的精确 Linux 接口名及其源 IPv4
+生成 `same_lan` 控制平面配置：上下游接口相同，OpenSurge DHCP 和透明代理均关闭。
+这不会把任意单网卡主机转换为隔离 LAN 网关，也不会把 `lan0` 或 `wan0` 之类的示例
+名称映射到本机接口。
+
+要使用 `isolated_lan`，必须显式提供已经存在的下游接口（或已创建的 VLAN）、上游
+接口、已配置在下游接口上的 LAN IPv4，以及 LAN CIDR。安装器不会创建 VLAN、添加
+地址，或推断上游。CIDR 不是 `/24` 时，还必须显式提供位于该 CIDR 内且顺序正确的
+DHCP 起止地址。
+
 Linux 的 mihomo TUN 始终启用 `auto-route` 和 `auto-redirect`。为避免部分
 nftables/netlink 环境返回 `EEXIST`，`route-exclude-address` **不得**加入
 `255.255.255.255/32`。因此有限广播发现（例如向该地址发送的服务发现）不在当前

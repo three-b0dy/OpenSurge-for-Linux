@@ -22,6 +22,7 @@ download_dir=''
 temporary_policy_path=''
 temporary_policy_identity=''
 temporary_policy_contents=''
+temporary_config_path=''
 
 cleanup() {
 	if test -n "$temporary_policy_path" && temporary_policy_is_ours; then
@@ -29,6 +30,9 @@ cleanup() {
 	fi
 	if test -n "$download_dir"; then
 		rm -rf -- "$download_dir"
+	fi
+	if test -n "$temporary_config_path"; then
+		rm -f -- "$temporary_config_path"
 	fi
 }
 
@@ -72,6 +76,9 @@ configure_paths() {
 		/*:/*:/*:/*) ;;
 		*) die 'test paths must be absolute' ;;
 	esac
+	etc_dir="$installer_root$PRODUCTION_ETC_DIR"
+	state_dir="$installer_root$PRODUCTION_STATE_DIR"
+	run_dir="$installer_root$PRODUCTION_RUN_DIR"
 
 	if test -n "${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL:-}"; then
 		release_repository_url=${OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL%/}
@@ -102,6 +109,16 @@ is_ipv4() {
 	done
 }
 
+is_unicast_ipv4() {
+	local address=$1
+	local -a octets
+
+	is_ipv4 "$address" || return 1
+	IFS=. read -r -a octets <<<"$address"
+	((10#${octets[0]} > 0 && 10#${octets[0]} < 224 && 10#${octets[0]} != 127)) || return 1
+	test "$address" != 255.255.255.255
+}
+
 is_ipv4_cidr() {
 	local value=$1
 	local address prefix
@@ -110,7 +127,7 @@ is_ipv4_cidr() {
 	test -n "$address" && test -n "$prefix" || return 1
 	[[ $prefix =~ ^[0-9]{1,2}$ ]] || return 1
 	((10#$prefix <= 32)) || return 1
-	is_ipv4 "$address"
+	is_unicast_ipv4 "$address"
 }
 
 is_interface_name() {
@@ -123,14 +140,320 @@ validate_isolated_arguments() {
 		die 'isolated_lan requires --downstream-interface, --upstream-interface, --lan-ip, and --lan-cidr'
 	is_interface_name "$downstream_interface" || die 'invalid downstream interface'
 	is_interface_name "$upstream_interface" || die 'invalid upstream interface'
-	is_ipv4 "$lan_ip" || die 'invalid LAN IPv4 address'
+	is_unicast_ipv4 "$lan_ip" || die 'invalid LAN IPv4 address'
 	is_ipv4_cidr "$lan_cidr" || die 'invalid LAN CIDR'
 	if test -n "$dhcp_range_start" || test -n "$dhcp_range_end"; then
 		test -n "$dhcp_range_start" && test -n "$dhcp_range_end" || \
 			die 'DHCP range requires both --dhcp-range-start and --dhcp-range-end'
-		is_ipv4 "$dhcp_range_start" || die 'invalid DHCP range start'
-		is_ipv4 "$dhcp_range_end" || die 'invalid DHCP range end'
+		is_unicast_ipv4 "$dhcp_range_start" || die 'invalid DHCP range start'
+		is_unicast_ipv4 "$dhcp_range_end" || die 'invalid DHCP range end'
 	fi
+}
+
+route_field() {
+	local route_output=$1
+	local wanted_field=$2
+	local -a fields
+	local index
+
+	read -r -a fields <<<"$route_output"
+	for ((index = 0; index + 1 < ${#fields[@]}; index++)); do
+		if test "${fields[$index]}" = "$wanted_field"; then
+			printf '%s' "${fields[$((index + 1))]}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+validate_interface_exists() {
+	local interface_name=$1
+
+	is_interface_name "$interface_name" || die "invalid interface: $interface_name"
+	ip link show dev -- "$interface_name" >/dev/null 2>&1 || die "Linux interface does not exist: $interface_name"
+}
+
+ipv4_to_u32() {
+	local address=$1
+	local -a octets
+
+	IFS=. read -r -a octets <<<"$address"
+	printf '%u' "$(((10#${octets[0]} << 24) | (10#${octets[1]} << 16) | (10#${octets[2]} << 8) | 10#${octets[3]}))"
+}
+
+cidr_prefix() {
+	local cidr=$1
+	printf '%s' "${cidr#*/}"
+}
+
+cidr_address() {
+	local cidr=$1
+	printf '%s' "${cidr%/*}"
+}
+
+cidr_mask() {
+	local prefix=$1
+
+	if test "$prefix" -eq 0; then
+		printf '0'
+		return
+	fi
+	printf '%u' "$(((0xffffffff << (32 - prefix)) & 0xffffffff))"
+}
+
+ipv4_in_cidr() {
+	local address=$1
+	local cidr=$2
+	local prefix
+	local mask
+	local address_number
+	local network_number
+
+	prefix=$(cidr_prefix "$cidr")
+	mask=$(cidr_mask "$prefix")
+	address_number=$(ipv4_to_u32 "$address")
+	network_number=$(ipv4_to_u32 "$(cidr_address "$cidr")")
+	test "$((address_number & mask))" -eq "$((network_number & mask))"
+}
+
+ipv4_is_network_or_broadcast() {
+	local address=$1
+	local cidr=$2
+	local prefix
+	local mask
+	local address_number
+	local network_number
+	local broadcast_number
+
+	prefix=$(cidr_prefix "$cidr")
+	test "$prefix" -le 30 || return 1
+	mask=$(cidr_mask "$prefix")
+	address_number=$(ipv4_to_u32 "$address")
+	network_number=$(( $(ipv4_to_u32 "$(cidr_address "$cidr")") & mask ))
+	broadcast_number=$((network_number | ((~mask) & 0xffffffff)))
+	test "$address_number" -eq "$network_number" || test "$address_number" -eq "$broadcast_number"
+}
+
+ipv4_prefix_24() {
+	local address=$1
+	local -a octets
+
+	IFS=. read -r -a octets <<<"$address"
+	printf '%s.%s.%s' "${octets[0]}" "${octets[1]}" "${octets[2]}"
+}
+
+is_nonlocal_nameserver() {
+	local address=$1
+
+	if is_unicast_ipv4 "$address"; then
+		return 0
+	fi
+	case "$address" in
+		::|::1|0:0:0:0:0:0:0:0|0:0:0:0:0:0:0:1|[Ff][Ff]*|[Ff][Ee]8[0-9A-Fa-f]:*) return 1 ;;
+		*:* ) [[ $address =~ ^[0-9A-Fa-f:.%]+$ ]] ;;
+		*) return 1 ;;
+	esac
+}
+
+has_nonlocal_resolver() {
+	local resolver_path="$etc_dir/resolv.conf"
+	local record_type
+	local address
+	local ignored
+
+	test -r "$resolver_path" || return 1
+	while read -r record_type address ignored; do
+		if test "$record_type" = nameserver && is_nonlocal_nameserver "$address"; then
+			return 0
+		fi
+	done <"$resolver_path"
+	return 1
+}
+
+interface_has_ipv4() {
+	local interface_name=$1
+	local expected_address=$2
+	local record_type
+	local address_with_prefix
+	local ignored
+
+	while read -r record_type address_with_prefix ignored; do
+		if test "$record_type" = inet && test "${address_with_prefix%/*}" = "$expected_address"; then
+			return 0
+		fi
+	done < <(ip -4 addr show dev -- "$interface_name")
+	return 1
+}
+
+validate_dhcp_range() {
+	local cidr=$1
+	local start=$2
+	local end=$3
+	local start_number
+	local end_number
+
+	is_unicast_ipv4 "$start" || die 'invalid DHCP range start'
+	is_unicast_ipv4 "$end" || die 'invalid DHCP range end'
+	ipv4_in_cidr "$start" "$cidr" && ipv4_in_cidr "$end" "$cidr" || die 'DHCP range must remain inside LAN CIDR'
+	ipv4_is_network_or_broadcast "$start" "$cidr" && die 'DHCP range must not include the network or broadcast address'
+	ipv4_is_network_or_broadcast "$end" "$cidr" && die 'DHCP range must not include the network or broadcast address'
+	start_number=$(ipv4_to_u32 "$start")
+	end_number=$(ipv4_to_u32 "$end")
+	test "$start_number" -le "$end_number" || die 'DHCP range start must not be after DHCP range end'
+	test "$lan_ip" != "$start" && test "$lan_ip" != "$end" || die 'LAN IPv4 must not be a DHCP range endpoint'
+}
+
+collect_default_route_topology() {
+	local route_get_output
+	local default_route_output
+	local default_route_device
+	local default_route_source
+	local default_route_gateway
+	local default_route_table_device
+
+	route_get_output=$(ip -4 route get 1.1.1.1) || die 'cannot inspect IPv4 default route'
+	default_route_output=$(ip -4 route show default) || die 'cannot inspect IPv4 default route'
+	default_route_device=$(route_field "$route_get_output" dev || true)
+	default_route_source=$(route_field "$route_get_output" src || true)
+	default_route_gateway=$(route_field "$route_get_output" via || true)
+	default_route_table_device=$(route_field "$default_route_output" dev || true)
+
+	test -n "$default_route_device" && test -n "$default_route_table_device" || die 'default-route interface is required'
+	test "$default_route_device" = "$default_route_table_device" || die 'default-route interface does not match route table'
+	test -n "$default_route_source" || die 'default-route source IPv4 is required'
+	is_unicast_ipv4 "$default_route_source" || die 'default-route source IPv4 is invalid'
+	if test -n "$default_route_gateway"; then
+		is_unicast_ipv4 "$default_route_gateway" || die 'default-route gateway IPv4 is invalid'
+	else
+		default_route_gateway=$(route_field "$default_route_output" via || true)
+		if test -n "$default_route_gateway"; then
+			is_unicast_ipv4 "$default_route_gateway" || die 'default-route gateway IPv4 is invalid'
+		fi
+	fi
+	test -n "$default_route_gateway" || has_nonlocal_resolver || die 'no default-route gateway or non-local resolver is available'
+	validate_interface_exists "$default_route_device"
+
+	downstream_interface=$default_route_device
+	upstream_interface=$default_route_device
+	lan_ip=$default_route_source
+	lan_cidr=''
+	dhcp_range_start="$(ipv4_prefix_24 "$lan_ip").100"
+	dhcp_range_end="$(ipv4_prefix_24 "$lan_ip").200"
+}
+
+collect_isolated_topology() {
+	local prefix
+	local lan_prefix
+
+	validate_interface_exists "$downstream_interface"
+	validate_interface_exists "$upstream_interface"
+	interface_has_ipv4 "$downstream_interface" "$lan_ip" || die 'LAN IPv4 is not configured on downstream interface'
+	ipv4_in_cidr "$lan_ip" "$lan_cidr" || die 'LAN IPv4 must fall inside LAN CIDR'
+	ipv4_is_network_or_broadcast "$lan_ip" "$lan_cidr" && die 'LAN IPv4 must not be the network or broadcast address'
+	prefix=$(cidr_prefix "$lan_cidr")
+	if test "$prefix" -eq 24; then
+		lan_prefix=$(ipv4_prefix_24 "$lan_ip")
+		if test -z "$dhcp_range_start"; then
+			dhcp_range_start="$lan_prefix.100"
+			dhcp_range_end="$lan_prefix.200"
+		fi
+	else
+		test -n "$dhcp_range_start" && test -n "$dhcp_range_end" || die 'non-/24 isolated LAN requires an explicit DHCP range'
+	fi
+	validate_dhcp_range "$lan_cidr" "$dhcp_range_start" "$dhcp_range_end"
+}
+
+collect_fresh_topology() {
+	case "$mode" in
+		same_lan) collect_default_route_topology ;;
+		isolated_lan) collect_isolated_topology ;;
+		*) die "fresh configuration is not supported for mode: $mode" ;;
+	esac
+}
+
+render_fresh_config() {
+	local config_directory="$etc_dir/opensurge"
+	local config_path="$config_directory/config.yaml"
+	local dhcp_enabled=false
+	local rendered_mode=$mode
+
+	if test "$mode" = isolated_lan; then
+		dhcp_enabled=true
+	fi
+	mkdir -p "$config_directory" || die 'cannot create OpenSurge configuration directory'
+	temporary_config_path=$(mktemp "$config_directory/.config.yaml.XXXXXX") || die 'cannot create temporary OpenSurge configuration'
+	chmod 0600 "$temporary_config_path" || die 'cannot protect temporary OpenSurge configuration'
+	cat >"$temporary_config_path" <<EOF
+gateway:
+  mode: "$rendered_mode"
+  interface: "$downstream_interface"
+  lan_ip: "$lan_ip"
+  upstream_interface: "$upstream_interface"
+  router_dhcp_disabled_confirmed: false
+
+dhcp:
+  binary: "dnsmasq"
+  enabled: $dhcp_enabled
+  range_start: "$dhcp_range_start"
+  range_end: "$dhcp_range_end"
+  lease_time: "12h"
+  domain: "lan"
+
+device_policy:
+  file: ""
+  protected_ipv4: ""
+
+dns:
+  listen: "$lan_ip"
+  port: 53
+  upstream: "127.0.0.1#1053"
+
+management:
+  listen: "$lan_ip:61767"
+  tls_cert_file: ""
+  tls_key_file: ""
+
+mihomo:
+  binary: "/usr/lib/opensurge/mihomo"
+  config: "/run/opensurge/mihomo.yaml"
+  profile_mode: "managed"
+  profile: ""
+  mixed_port: 7890
+  redir_port: 0
+  api_addr: "127.0.0.1:9090"
+  secret: ""
+
+nftables:
+  table: "opensurge"
+
+transparent:
+  mode: "off"
+  tun_device: "opensurge-tun"
+  tun_stack: "mixed"
+  tun_auto_route: true
+  tun_auto_redirect: true
+  tun_auto_detect_interface: false
+  tun_strict_route: false
+
+upstream_proxy:
+  enabled: false
+  name: "real-device-egress"
+  type: "http"
+  server: "127.0.0.1"
+  port: 18080
+  username: ""
+  password: ""
+  match_domain: "example.com"
+
+runtime:
+  dir: "/var/lib/opensurge/runtime"
+EOF
+	mv -f -- "$temporary_config_path" "$config_path" || die 'cannot install OpenSurge configuration'
+	temporary_config_path=''
+	chown root:opensurge "$config_path" || die 'cannot set OpenSurge configuration ownership'
+	chmod 0640 "$config_path" || die 'cannot set OpenSurge configuration mode'
+	opensurge config validate --config "$config_path" || die 'generated OpenSurge configuration did not validate'
+	log "generated fresh $mode configuration at $config_path"
 }
 
 validate_arguments() {
@@ -419,6 +742,7 @@ main() {
 	local dhcp_range_start=''
 	local dhcp_range_end=''
 	local package_source_count=0
+	local fresh_config=0
 
 	while test "$#" -gt 0; do
 		case "$1" in
@@ -476,6 +800,10 @@ main() {
 	validate_arguments
 	configure_paths
 	require_root_and_tty
+	if test ! -e "$etc_dir/opensurge/config.yaml" && test ! -L "$etc_dir/opensurge/config.yaml"; then
+		fresh_config=1
+		collect_fresh_topology
+	fi
 	local architecture
 	local package_path=''
 	local checksum_path=''
@@ -489,7 +817,13 @@ main() {
 	verify_package_architecture "$package_path" "$architecture"
 	verify_checksum "$package_path" "$checksum_path"
 	log "verified release asset $(basename -- "$package_path") for $architecture"
-	printf 'OpenSurge release asset verified; package installation is not implemented yet.\n' >"$tty_path"
+	dpkg -i "$package_path"
+	if test "$fresh_config" -eq 1; then
+		render_fresh_config
+	else
+		log "preserved existing OpenSurge configuration at $etc_dir/opensurge/config.yaml"
+	fi
+	printf 'OpenSurge release asset installed.\n' >"$tty_path"
 }
 
 trap cleanup EXIT

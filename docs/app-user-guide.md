@@ -21,6 +21,21 @@ must not exclude `255.255.255.255/32`: this can cause auto-redirect's nftables
 initialization to fail with `EEXIST`. Limited-broadcast discovery is not a
 validated traffic path.
 
+### Release-installer initial topology
+
+On a fresh installation, the release installer reads the IPv4 default route
+and generates a `same_lan` control-plane configuration using that exact Linux
+link name and source IPv4. It uses the same link for gateway and upstream,
+while keeping OpenSurge DHCP and transparent proxying off. It does not turn an
+arbitrary single-NIC host into an isolated-LAN gateway and it never maps sample
+names such as `lan0` or `wan0` to host interfaces.
+
+Choose `isolated_lan` only with an explicit existing downstream link or VLAN,
+an explicit upstream link, a LAN IPv4 already configured on the downstream
+link, and its CIDR. The installer neither creates VLANs nor adds addresses nor
+guesses the upstream. A non-`/24` isolated CIDR also requires explicit,
+in-prefix DHCP range endpoints in ascending order.
+
 ## Install, initialize, and sign in
 
 Install the matching GitHub Release package, review the configuration, then

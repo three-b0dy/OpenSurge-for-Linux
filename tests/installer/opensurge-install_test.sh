@@ -19,6 +19,7 @@ fixture_server_port="$test_root/release-server.port"
 fixture_server_log="$test_root/release-server.log"
 fixture_server_pid=''
 release_base_url=''
+config_path="$test_root/root/etc/opensurge/config.yaml"
 
 cleanup() {
 	if test -n "$fixture_server_pid"; then
@@ -47,6 +48,28 @@ assert_contains() {
 	local file=$1
 	local expected=$2
 	grep -F -- "$expected" "$file" >/dev/null || fail "missing text in $file: $expected"
+}
+
+assert_file_equals() {
+	local file=$1
+	local expected=$2
+
+	test -f "$file" || fail "missing file: $file"
+	printf '%s' "$expected" | cmp -s - "$file" || fail "unexpected contents in $file"
+}
+
+assert_file_missing() {
+	local file=$1
+	test ! -e "$file" && test ! -L "$file" || fail "unexpected file: $file"
+}
+
+assert_file_mode() {
+	local file=$1
+	local expected=$2
+	local actual
+
+	actual=$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file")
+	test "$actual" = "$expected" || fail "mode for $file = $actual, want $expected"
 }
 
 assert_command_not_invoked() {
@@ -110,6 +133,12 @@ printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
 if test "$#" -eq 1 && test "$1" = --print-architecture; then
 	printf '%s\n' "${OPENSURGE_INSTALLER_TEST_DPKG_ARCH:-amd64}"
 fi
+if test "$#" -eq 2 && test "$1" = -i; then
+	if test "${OPENSURGE_INSTALLER_TEST_EXPECT_FRESH_CONFIG:-0}" = 1; then
+		test ! -e "$OPENSURGE_INSTALLER_TEST_CONFIG_PATH" || exit 1
+	fi
+	touch "$OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH"
+fi
 EOF
 	chmod 0755 "$fake_bin/dpkg"
 }
@@ -125,6 +154,67 @@ if test "$#" -eq 3 && test "$1" = -f && test "$3" = Architecture; then
 	fi
 EOF
 	chmod 0755 "$fake_bin/dpkg-deb"
+}
+
+make_fake_ip() {
+	cat >"$fake_bin/ip" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+
+scenario=${OPENSURGE_INSTALLER_TEST_IP_SCENARIO:-ens18}
+case "$1:$2:$3" in
+	-4:route:get)
+		case "$scenario" in
+			missing-device) printf '%s\n' '1.1.1.1 via 192.0.2.1 src 192.0.2.10 uid 0' ;;
+			missing-source) printf '%s\n' '1.1.1.1 via 192.0.2.1 dev ens18 uid 0' ;;
+			no-via) printf '%s\n' '1.1.1.1 dev ens18 src 192.0.2.10 uid 0' ;;
+			vlan) printf '%s\n' '1.1.1.1 via 198.51.100.1 dev enp1s0.50 src 198.51.100.2 uid 0' ;;
+			bridge) printf '%s\n' '1.1.1.1 via 192.0.2.1 dev br-lan src 192.0.2.10 uid 0' ;;
+			*) printf '%s\n' '1.1.1.1 via 192.0.2.1 dev ens18 src 192.0.2.10 uid 0' ;;
+		esac
+		;;
+	-4:route:show)
+		case "$scenario" in
+			missing-device) printf '%s\n' 'default via 192.0.2.1 proto dhcp src 192.0.2.10 metric 100' ;;
+			missing-source) printf '%s\n' 'default via 192.0.2.1 dev ens18 proto dhcp metric 100' ;;
+			no-via) printf '%s\n' 'default dev ens18 proto dhcp src 192.0.2.10 metric 100' ;;
+			vlan) printf '%s\n' 'default via 198.51.100.1 dev enp1s0.50 proto dhcp src 198.51.100.2 metric 100' ;;
+			bridge) printf '%s\n' 'default via 192.0.2.1 dev br-lan proto dhcp src 192.0.2.10 metric 100' ;;
+			*) printf '%s\n' 'default via 192.0.2.1 dev ens18 proto dhcp src 192.0.2.10 metric 100' ;;
+		esac
+		;;
+	link:show:dev)
+		case "${5:-}" in
+			eth0|ens18|enp1s0.50|br-lan) exit 0 ;;
+			*) exit 1 ;;
+		esac
+		;;
+	-4:addr:show)
+		case "${6:-}" in
+			br-lan)
+				test "$scenario" = missing-lan-address || printf '%s\n' '    inet 192.168.50.1/24 scope global br-lan'
+				;;
+			enp1s0.50) printf '%s\n' '    inet 198.51.100.2/24 scope global enp1s0.50' ;;
+			esac
+		;;
+	esac
+EOF
+	chmod 0755 "$fake_bin/ip"
+}
+
+make_fake_opensurge() {
+	cat >"$fake_bin/opensurge" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+if test "$#" -eq 4 && test "$1" = config && test "$2" = validate && test "$3" = --config; then
+	test -f "$4" && test -f "$OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH"
+	fi
+EOF
+	chmod 0755 "$fake_bin/opensurge"
 }
 
 start_release_fixture() {
@@ -180,6 +270,10 @@ restore_checksums() {
 
 run_installer() {
 	local transfer_prerequisites=${OPENSURGE_TEST_TRANSFER_PREREQUISITES:-available}
+	local expect_fresh_config=0
+	if test ! -e "$config_path" && test ! -L "$config_path"; then
+		expect_fresh_config=1
+	fi
 
 	OPENSURGE_INSTALLER_TEST=1 \
 		OPENSURGE_INSTALLER_ROOT="$test_root/root" \
@@ -190,9 +284,20 @@ run_installer() {
 		OPENSURGE_INSTALLER_TEST_RELEASE_BASE_URL="$release_base_url" \
 		OPENSURGE_INSTALLER_TEST_TRANSFER_PREREQUISITES="$transfer_prerequisites" \
 		OPENSURGE_INSTALLER_TEST_POLICY_MUTATION="${OPENSURGE_TEST_POLICY_MUTATION:-}" \
+		OPENSURGE_INSTALLER_TEST_IP_SCENARIO="${OPENSURGE_INSTALLER_TEST_IP_SCENARIO:-ens18}" \
+		OPENSURGE_INSTALLER_TEST_CONFIG_PATH="$config_path" \
+		OPENSURGE_INSTALLER_TEST_PACKAGE_PHASE_PATH="$test_root/package-phase-complete" \
+		OPENSURGE_INSTALLER_TEST_EXPECT_FRESH_CONFIG="$expect_fresh_config" \
 		OPENSURGE_TEST_SECRET="$test_secret" \
 		PATH="$fake_bin:$PATH" \
 		bash "$installer" "$@" >"$captured_stdout" 2>"$captured_stderr"
+}
+
+reset_install_root() {
+	rm -rf -- "$test_root/root"
+	rm -f -- "$test_root/package-phase-complete"
+	mkdir -p "$test_root/root/etc"
+	printf '%s\n' "${OPENSURGE_INSTALLER_TEST_RESOLVER:-nameserver 192.0.2.53}" >"$test_root/root/etc/resolv.conf"
 }
 
 expect_fail() {
@@ -214,15 +319,77 @@ expect_fail() {
 }
 
 expect_success() {
+	reset_install_root
 	: >"$captured_stdout"
 	: >"$captured_stderr"
 	: >"$captured_commands"
 	run_installer "$@" || fail "installer rejected valid invocation: $*"
 	assert_not_contains "$captured_commands" 'apt-get install'
-	assert_not_contains "$captured_commands" 'dpkg -i'
+	assert_contains "$captured_commands" 'dpkg -i'
 	assert_not_contains "$captured_stdout" "$test_secret"
 	assert_not_contains "$captured_stderr" "$test_secret"
 	assert_not_contains "$installer_log" "$test_secret"
+}
+
+expect_topology_failure() {
+	reset_install_root
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	if run_installer "$@"; then
+		fail "installer accepted invalid topology: $*"
+	fi
+	assert_not_contains "$captured_commands" 'dpkg -i'
+	assert_file_missing "$config_path"
+}
+
+assert_generated_same_lan_config() {
+	assert_contains "$config_path" 'mode: "same_lan"'
+	assert_contains "$config_path" 'interface: "ens18"'
+	assert_contains "$config_path" 'lan_ip: "192.0.2.10"'
+	assert_contains "$config_path" 'upstream_interface: "ens18"'
+	assert_contains "$config_path" 'enabled: false'
+	assert_contains "$config_path" 'listen: "192.0.2.10"'
+	assert_contains "$config_path" 'listen: "192.0.2.10:61767"'
+	assert_contains "$config_path" 'mode: "off"'
+	assert_contains "$config_path" 'binary: "/usr/lib/opensurge/mihomo"'
+	assert_contains "$config_path" 'config: "/run/opensurge/mihomo.yaml"'
+	assert_contains "$config_path" 'dir: "/var/lib/opensurge/runtime"'
+	assert_file_mode "$config_path" 640
+	assert_contains "$captured_commands" 'chown root:opensurge'
+	go run "$repo_root/cmd/opensurge" config validate --config "$config_path" >/dev/null || \
+		fail 'generated same_lan configuration did not pass opensurge config validate'
+}
+
+expect_existing_config_is_preserved() {
+	local original=$'gateway:\n  mode: "same_lan"\n# preserve every byte\n'
+
+	reset_install_root
+	mkdir -p "$(dirname "$config_path")"
+	printf '%s' "$original" >"$config_path"
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	run_installer --version v1.2.3 || fail 'installer rejected an existing config fixture'
+	assert_file_equals "$config_path" "$original"
+}
+
+expect_isolated_config_uses_exact_link_names() {
+	reset_install_root
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	run_installer --version v1.2.3 --mode isolated_lan \
+		--downstream-interface br-lan --upstream-interface enp1s0.50 \
+		--lan-ip 192.168.50.1 --lan-cidr 192.168.50.0/24 || \
+		fail 'installer rejected valid isolated topology'
+	assert_contains "$config_path" 'mode: "isolated_lan"'
+	assert_contains "$config_path" 'interface: "br-lan"'
+	assert_contains "$config_path" 'upstream_interface: "enp1s0.50"'
+	assert_contains "$config_path" 'range_start: "192.168.50.100"'
+	assert_contains "$config_path" 'range_end: "192.168.50.200"'
+	go run "$repo_root/cmd/opensurge" config validate --config "$config_path" >/dev/null || \
+		fail 'generated isolated configuration did not pass opensurge config validate'
 }
 
 expect_fail_when_checksum_missing() {
@@ -367,12 +534,14 @@ mkdir -p "$fake_bin"
 : >"$captured_commands"
 : >"$fake_tty"
 chmod 0600 "$fake_tty"
-for command_name in systemctl ip ss; do
+for command_name in chown systemctl ss; do
 	make_fake_command "$command_name"
 done
 make_fake_apt_get
 make_fake_dpkg
 make_fake_dpkg_deb
+make_fake_ip
+make_fake_opensurge
 start_release_fixture
 
 # These cases catch a parser that begins host work before rejecting an invalid
@@ -401,6 +570,7 @@ assert_contains "$fixture_server_log" 'GET /three-b0dy/OpenSurge-for-Linux/relea
 assert_contains "$captured_commands" 'dpkg-deb -f'
 assert_command_count 1
 assert_contains "$installer_log" 'verified release asset opensurge_1.2.3_amd64.deb for amd64'
+assert_generated_same_lan_config
 
 # A supplied tag must bypass discovery and be used verbatim in both asset URLs.
 : >"$fixture_server_log"
@@ -422,5 +592,37 @@ expect_transfer_bootstrap_preserves_modified_temporary_policy
 expect_transfer_bootstrap_preserves_replaced_temporary_policy
 expect_transfer_bootstrap_preserves_existing_policy
 expect_offline_final_symlink_uses_target_and_adjacent_checksum
+
+# Fresh configurations use the exact kernel default-route link name. They do
+# not assign a friendly alias or implicitly create a downstream network.
+expect_isolated_config_uses_exact_link_names
+expect_existing_config_is_preserved
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=missing-device expect_topology_failure --version v1.2.3
+assert_contains "$captured_stderr" 'default-route interface is required'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=missing-source expect_topology_failure --version v1.2.3
+assert_contains "$captured_stderr" 'default-route source IPv4 is required'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=no-via \
+	OPENSURGE_INSTALLER_TEST_RESOLVER='nameserver 127.0.0.53' \
+	expect_topology_failure --version v1.2.3
+assert_contains "$captured_stderr" 'no default-route gateway or non-local resolver is available'
+
+OPENSURGE_INSTALLER_TEST_IP_SCENARIO=missing-lan-address expect_topology_failure --version v1.2.3 \
+	--mode isolated_lan --downstream-interface br-lan --upstream-interface eth0 \
+	--lan-ip 192.168.50.1 --lan-cidr 192.168.50.0/24
+assert_contains "$captured_stderr" 'LAN IPv4 is not configured on downstream interface'
+
+expect_topology_failure --version v1.2.3 --mode isolated_lan \
+	--downstream-interface br-lan --upstream-interface eth0 \
+	--lan-ip 192.168.50.1 --lan-cidr 192.168.48.0/20
+assert_contains "$captured_stderr" 'non-/24 isolated LAN requires an explicit DHCP range'
+
+expect_topology_failure --version v1.2.3 --mode isolated_lan \
+	--downstream-interface br-lan --upstream-interface eth0 \
+	--lan-ip 192.168.50.1 --lan-cidr 192.168.50.0/24 \
+	--dhcp-range-start 192.168.51.100 --dhcp-range-end 192.168.51.200
+assert_contains "$captured_stderr" 'DHCP range must remain inside LAN CIDR'
 
 echo "opensurge installer release asset tests passed"
