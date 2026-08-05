@@ -3,6 +3,9 @@ set -eu
 
 case "${1:-}" in
 	remove|upgrade|deconfigure)
+		if test -x /usr/bin/opensurge; then
+			/usr/bin/opensurge stop --config /etc/opensurge/config.yaml >/dev/null 2>&1 || true
+		fi
 		if command -v systemctl >/dev/null 2>&1; then
 			systemctl stop opensurge-control.service opensurge-gateway.socket opensurge-gateway.service || true
 		fi

@@ -52,6 +52,8 @@ export type ControlConfig = {
   device_policy: { enabled: boolean; protected_ipv4: string[] }
 }
 
+export type AuthStatus = { initialized: boolean; authenticated: boolean }
+
 export type Overview = {
   schema_version: number
   revision: string

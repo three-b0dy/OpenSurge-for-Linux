@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, authenticationRequiredEvent, RequestError } from './api'
+import { AuthGate } from './components/AuthGate'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { RecoveryBanner, StatusDot } from './components/Common'
 import { DashboardPage } from './pages/DashboardPage'
@@ -142,11 +143,11 @@ export function App() {
       <div className="sidebar-status"><StatusDot status={overview?.status.gateway ?? 'unreachable'} /><div><strong>{statusLabel(overview?.status.gateway)}</strong><small>{overview?.status.lan_ip || 'Control API'}</small></div></div>
     </aside>
     <main className="workspace">
-      {authenticationRequired ? <section className="session-expired" role="alert"><span aria-hidden="true">!</span><div><h1>Web GUI 与 OpenSurge 的安全连接已过期</h1><p>请重新打开 OpenSurge 控制面板并完成会话引导。</p></div></section> : <>
+      {authenticationRequired ? <AuthGate onAuthenticated={() => { setAuthenticationRequired(false); setError(''); void refresh() }} /> : <>
         {overview?.recovery.required && needsNetworkRecoveryWarning(overview.recovery.stage) && <RecoveryBanner recovery={overview.recovery.stage} onOpen={() => go('network', 'control')} />}
         {error && <div className="error-banner" role="alert"><span>!</span><p>{error}</p><button onClick={() => void refresh()}>重试</button></div>}
         <PageErrorBoundary key={page}>
-          {page === 'dashboard' && <DashboardPage overview={overview} onOpenNetwork={action => go('network', action === 'stop' ? 'bottom' : 'none')} />}
+          {page === 'dashboard' && <DashboardPage overview={overview} onChanged={refresh} onOpenNetwork={action => go('network', action === 'stop' ? 'bottom' : 'control')} />}
           {page === 'network' && <NetworkPage overview={overview} onChanged={refresh} onNavigate={() => go('devices')} />}
           {page === 'sources' && <SourcesPage overview={overview} onChanged={refresh} />}
           {page === 'devices' && <DevicesPage overview={overview} onChanged={refresh} onNavigate={go} onDirtyChange={setDevicesDirty} />}

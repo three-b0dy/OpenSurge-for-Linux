@@ -39,4 +39,4 @@ iproute2 负责接口、地址、路由和邻居检查；sysctl 管理 IPv4 forw
 `sudo bash ./opensurge-install`。安装器会校验包、创建单管理员登录和十年自签名证书，并仅在
 该 TTY 显示一次性密码；直接安装 `.deb` 会被拒绝。之后可以用
 `opensurge-setup replace-certificate` 替换为自有证书，或在控制 TTY 上用
-`opensurge-setup reset-password --username admin` 恢复管理员访问。
+`opensurge-setup reset-password` 恢复管理员访问。

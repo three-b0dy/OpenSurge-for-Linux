@@ -119,8 +119,8 @@ func TestValidateTopologyRejectsListenerPortConflict(t *testing.T) {
 }
 
 func TestDetectPolicyRouteConflictRejectsMihomoReservedPriority(t *testing.T) {
-	runner := &policyRuleRunner{output: []byte(`[{"priority":9001,"table":2022}]`)}
-	err := DetectPolicyRouteConflict(context.Background(), runner)
+	runner := &policyRuleRunner{output: []byte(`[{"priority":9001,"table":"other"}]`)}
+	err := DetectPolicyRouteConflict(context.Background(), runner, "opensurge-tun")
 	if err == nil || !strings.Contains(err.Error(), "9001") {
 		t.Fatalf("DetectPolicyRouteConflict() error = %v", err)
 	}
@@ -131,14 +131,43 @@ func TestDetectPolicyRouteConflictRejectsMihomoReservedPriority(t *testing.T) {
 
 func TestDetectPolicyRouteConflictAcceptsDefaultRules(t *testing.T) {
 	runner := &policyRuleRunner{output: []byte(`[{"priority":0,"table":"local"},{"priority":32766,"table":"main"}]`)}
-	if err := DetectPolicyRouteConflict(context.Background(), runner); err != nil {
+	if err := DetectPolicyRouteConflict(context.Background(), runner, "opensurge-tun"); err != nil {
 		t.Fatalf("DetectPolicyRouteConflict() error = %v", err)
+	}
+}
+
+// Reload validates a candidate while the current gateway is still running, so the
+// running TUN's own auto-route rules sit in the reserved range. Treating them as
+// a foreign conflict made every reload fail once TUN was up, which in turn made
+// applying a device policy impossible.
+func TestDetectPolicyRouteConflictIgnoresRulesOwnedByTheRunningTUN(t *testing.T) {
+	// Verbatim `ip -j rule show` output from a gateway running mihomo TUN.
+	runner := &policyRuleRunner{output: []byte(`[
+		{"priority":0,"src":"all","table":"local"},
+		{"priority":9000,"src":"all","dst":"198.18.0.0","dstlen":30,"table":"2022"},
+		{"priority":9001,"not":null,"src":"all","dport":53,"table":"main","suppress_prefixlen":0},
+		{"priority":9001,"src":"all","iif":"opensurge-tun","goto":9010},
+		{"priority":9002,"not":null,"src":"all","iif":"lo","table":"2022"},
+		{"priority":9002,"src":"198.18.0.0","srclen":30,"iif":"lo","table":"2022"},
+		{"priority":9010,"src":"all","nop":null},
+		{"priority":32766,"src":"all","table":"main"}
+	]`)}
+	if err := DetectPolicyRouteConflict(context.Background(), runner, "opensurge-tun"); err != nil {
+		t.Fatalf("DetectPolicyRouteConflict() rejected the running gateway's own rules: %v", err)
+	}
+}
+
+func TestDetectPolicyRouteConflictStillRejectsForeignRuleOnADifferentDevice(t *testing.T) {
+	runner := &policyRuleRunner{output: []byte(`[{"priority":9500,"iif":"wg0","table":"main"}]`)}
+	err := DetectPolicyRouteConflict(context.Background(), runner, "opensurge-tun")
+	if err == nil || !strings.Contains(err.Error(), "9500") {
+		t.Fatalf("DetectPolicyRouteConflict() error = %v, want a foreign conflict", err)
 	}
 }
 
 func TestDetectPolicyRouteConflictReportsCommandFailure(t *testing.T) {
 	runner := &policyRuleRunner{err: errors.New("ip unavailable")}
-	err := DetectPolicyRouteConflict(context.Background(), runner)
+	err := DetectPolicyRouteConflict(context.Background(), runner, "opensurge-tun")
 	if err == nil || !strings.Contains(err.Error(), "ip -j rule show") {
 		t.Fatalf("DetectPolicyRouteConflict() error = %v", err)
 	}

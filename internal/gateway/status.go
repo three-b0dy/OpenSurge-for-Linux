@@ -96,9 +96,13 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 			nftablesStatus = "loaded"
 			if loaded, err := nftables.New(m.cfg, m.paths, nil).Loaded(); err == nil && !loaded {
 				nftablesStatus = "unloaded"
-			} else if err != nil {
+			} else if err != nil && !nftables.IsUnprivileged(err) {
 				nftablesStatus = "unknown"
 			}
+			// An unprivileged reader (the control service runs without
+			// CAP_NET_ADMIN) cannot re-verify the ruleset. Keep the answer the
+			// privileged gateway recorded in its state instead of reporting
+			// "unknown", which reads as a fault rather than a missing capability.
 		}
 	}
 	forwarding := "unknown"

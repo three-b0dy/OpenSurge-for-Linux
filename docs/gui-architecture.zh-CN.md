@@ -27,7 +27,7 @@ OpenSurge 自己的 nftables table 管理转发/NAT 规则，并由 systemd 生�
 控制面使用单管理员会话认证。首次安装由 `opensurge-install` 生成十年自签名证书与
 `admin` 账号，并仅在有可写控制 TTY 的会话显示一次性密码；不能用直接 `.deb` 安装或手动
 初始化替代该受控流程。之后可用 `opensurge-setup replace-certificate` 替换为自有证书，或在
-控制 TTY 上用 `opensurge-setup reset-password --username admin` 恢复管理员访问。恢复流程不得
+控制 TTY 上用 `opensurge-setup reset-password` 恢复管理员访问。恢复流程不得
 改变上游路由器 DHCP；操作员必须在外部设备上记录任何 DHCP 变更。
 
 Web 构建产物位于 `internal/webui/dist`，修改 `web/src` 后运行 `make web-build`，再

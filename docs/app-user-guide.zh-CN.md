@@ -82,7 +82,7 @@ sudo opensurge-setup replace-certificate \
 ```
 
 忘记管理员密码时，在有控制 TTY 的主机上执行
-`sudo opensurge-setup reset-password --username admin`。
+`sudo opensurge-setup reset-password`。
 
 ## 校验与迁移
 

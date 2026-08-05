@@ -8,6 +8,8 @@ readonly PRODUCTION_LOG=/var/log/opensurge-install.log
 readonly PRODUCTION_BIN_DIR=/usr/sbin
 readonly PRODUCTION_RUN_DIR=/run
 readonly RELEASE_REPOSITORY_URL=https://github.com/three-b0dy/OpenSurge-for-Linux
+readonly POLICY_MARKER_PREFIX='OpenSurge installer temporary no-autostart policy '
+readonly PACKAGE_MANAGER_TIMEOUT_SECONDS=600
 
 etc_dir=$PRODUCTION_ETC_DIR
 state_dir=$PRODUCTION_STATE_DIR
@@ -45,6 +47,23 @@ dnsmasq_was_active=0
 resolv_conf_backup_exists=0
 resolv_conf_kind=absent
 control_status_url=''
+apt_index_refreshed=0
+manifest_seen=''
+manifest_state_version=''
+manifest_installer_version=''
+manifest_transaction_id=''
+manifest_install_phase=''
+manifest_resolver_was_altered=''
+manifest_resolved_was_altered=''
+manifest_resolved_was_enabled=''
+manifest_resolved_was_active=''
+manifest_dnsmasq_was_altered=''
+manifest_dnsmasq_was_enabled=''
+manifest_dnsmasq_was_active=''
+manifest_resolv_conf_backup_exists=''
+manifest_resolv_conf_kind=''
+manifest_selected_resolver=''
+manifest_resolver_selection=''
 
 cleanup() {
 	local status=$?
@@ -98,7 +117,7 @@ has_test_override() {
 configure_paths() {
 	if test "${OPENSURGE_INSTALLER_TEST:-}" != 1; then
 		has_test_override && die 'test path overrides require OPENSURGE_INSTALLER_TEST=1'
-		return
+		return 0
 	fi
 
 	installer_root=${OPENSURGE_INSTALLER_ROOT:?OPENSURGE_INSTALLER_ROOT is required in test mode}
@@ -267,7 +286,7 @@ validate_interface_exists() {
 	local interface_name=$1
 
 	is_interface_name "$interface_name" || die "invalid interface: $interface_name"
-	ip link show dev -- "$interface_name" >/dev/null 2>&1 || die "Linux interface does not exist: $interface_name"
+	ip link show dev "$interface_name" >/dev/null 2>&1 || die "Linux interface does not exist: $interface_name"
 }
 
 ipv4_to_u32() {
@@ -349,18 +368,7 @@ is_nonlocal_nameserver() {
 }
 
 has_nonlocal_resolver() {
-	local resolver_path="$etc_dir/resolv.conf"
-	local record_type
-	local address
-	local ignored
-
-	test -r "$resolver_path" || return 1
-	while read -r record_type address ignored; do
-		if test "$record_type" = nameserver && is_nonlocal_nameserver "$address"; then
-			return 0
-		fi
-	done <"$resolver_path"
-	return 1
+	first_nonlocal_nameserver >/dev/null
 }
 
 interface_has_ipv4() {
@@ -374,7 +382,7 @@ interface_has_ipv4() {
 		if test "$record_type" = inet && test "${address_with_prefix%/*}" = "$expected_address"; then
 			return 0
 		fi
-	done < <(ip -4 addr show dev -- "$interface_name")
+	done < <(ip -4 addr show dev "$interface_name")
 	return 1
 }
 
@@ -563,6 +571,20 @@ administrator_is_initialized() {
 	test -e "$admin_path" || test -L "$admin_path"
 }
 
+# The control service runs as the unprivileged opensurge account. A root-owned
+# 0600 record makes every later Web UI login fail with a server error, so prove
+# the account can actually read it before reporting a successful install.
+administrator_state_is_service_readable() {
+	local admin_path
+
+	admin_path=$(administrator_state_path)
+	if test "${OPENSURGE_INSTALLER_TEST:-}" = 1; then
+		test -r "$admin_path"
+		return
+	fi
+	runuser -u opensurge -- test -r "$admin_path" 2>/dev/null
+}
+
 generate_installer_password() {
 	local password
 
@@ -606,6 +628,11 @@ initialize_administrator() {
 	exec 9<&-
 	test "$setup_status" -eq 0 || die 'cannot initialize the OpenSurge administrator account'
 	administrator_is_initialized || die 'OpenSurge administrator initialization did not create state'
+	# opensurge-setup writes the record as root:opensurge 0640 itself, on both init
+	# and reset-password, so the unprivileged control service can always read it.
+	# Verify rather than re-apply, so a regression fails the install loudly.
+	administrator_state_is_service_readable || \
+		die 'OpenSurge administrator state is not readable by the opensurge service account'
 	log 'initialized the OpenSurge administrator account'
 }
 
@@ -656,7 +683,7 @@ start_and_verify_control_plane() {
 		attempts=1
 	fi
 	for ((attempt = 1; attempt <= attempts; attempt++)); do
-		if status_payload=$(curl --fail --silent --show-error --insecure "$control_status_url") && \
+		if status_payload=$(curl --fail --silent --show-error --insecure --connect-timeout 5 --max-time 10 "$control_status_url") && \
 			[[ $status_payload == *'"initialized":true'* ]]; then
 			log "verified OpenSurge HTTPS control availability at $control_status_url"
 			return
@@ -754,7 +781,7 @@ policy_file_identity() {
 	local policy_path=$1
 
 	if stat -c '%u:%a:%d:%i' "$policy_path" 2>/dev/null; then
-		return
+		return 0
 	fi
 	stat -f '%u:%Lp:%d:%i' "$policy_path" 2>/dev/null
 }
@@ -774,23 +801,54 @@ temporary_policy_is_ours() {
 	test "$current_contents" = "$temporary_policy_contents"
 }
 
+orphaned_installer_policy_exists() {
+	local policy_path=$1
+	local identity
+	local contents
+
+	test -f "$policy_path" && ! test -L "$policy_path" || return 1
+	identity=$(policy_file_identity "$policy_path") || return 1
+	case "$identity" in
+		"$EUID:755:"*) ;;
+		*) return 1 ;;
+	esac
+	contents=$(cat "$policy_path") || return 1
+	case "$contents" in
+		'#!/bin/sh'$'\n''# '"$POLICY_MARKER_PREFIX"*$'\n''exit 101') return 0 ;;
+	esac
+	return 1
+}
+
 ensure_temporary_policy() {
 	local policy_path="$bin_dir/policy-rc.d"
+	local temporary_file
 
 	if test -e "$policy_path" || test -L "$policy_path"; then
-		log 'existing policy-rc.d controls package service policy during dependency installation'
-	else
-		temporary_policy_marker="OpenSurge installer temporary no-autostart policy $installer_transaction_id"
-		temporary_policy_contents=$'#!/bin/sh\n# '"$temporary_policy_marker"$'\nexit 101'
-		printf '%s\n' "$temporary_policy_contents" >"$policy_path" || die 'cannot create temporary no-autostart policy'
-		chmod 0755 "$policy_path" || die 'cannot protect temporary no-autostart policy'
-		temporary_policy_path=$policy_path
-		temporary_policy_identity=$(policy_file_identity "$policy_path") || die 'cannot identify temporary no-autostart policy'
-		case "$temporary_policy_identity" in
-			"$EUID:755:"*) ;;
-			*) die 'cannot protect temporary no-autostart policy' ;;
-		esac
+		if orphaned_installer_policy_exists "$policy_path"; then
+			log 'reclaiming an orphaned no-autostart policy left by an earlier interrupted installation'
+			rm -f -- "$policy_path" || die 'cannot remove orphaned no-autostart policy'
+		else
+			log 'existing policy-rc.d controls package service policy during dependency installation'
+			return
+		fi
 	fi
+
+	temporary_policy_marker="$POLICY_MARKER_PREFIX$installer_transaction_id"
+	temporary_policy_contents=$'#!/bin/sh\n# '"$temporary_policy_marker"$'\nexit 101'
+	temporary_file=$(mktemp "$bin_dir/.policy-rc.d.XXXXXX") || die 'cannot create temporary no-autostart policy'
+	printf '%s\n' "$temporary_policy_contents" >"$temporary_file" || die 'cannot write temporary no-autostart policy'
+	chmod 0755 "$temporary_file" || die 'cannot protect temporary no-autostart policy'
+	mv -n -- "$temporary_file" "$policy_path" 2>/dev/null || true
+	if test -e "$temporary_file"; then
+		rm -f -- "$temporary_file"
+		die 'cannot install temporary no-autostart policy'
+	fi
+	temporary_policy_path=$policy_path
+	temporary_policy_identity=$(policy_file_identity "$policy_path") || die 'cannot identify temporary no-autostart policy'
+	case "$temporary_policy_identity" in
+		"$EUID:755:"*) ;;
+		*) die 'cannot protect temporary no-autostart policy' ;;
+	esac
 }
 
 restore_temporary_policy() {
@@ -868,15 +926,29 @@ restore_installer_marker() {
 	installer_marker_dir=''
 }
 
-bootstrap_transfer_prerequisites() {
-	if test -e "$bin_dir/policy-rc.d" || test -L "$bin_dir/policy-rc.d"; then
-		log 'existing policy-rc.d controls package service policy during transfer bootstrap'
+run_package_manager() {
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$PACKAGE_MANAGER_TIMEOUT_SECONDS" "$@"
+	else
+		"$@"
 	fi
+}
+
+refresh_apt_index() {
+	if test "$apt_index_refreshed" -eq 1; then
+		return
+	fi
+	run_package_manager apt-get update || die 'cannot refresh the APT package index (command failed or timed out)'
+	apt_index_refreshed=1
+}
+
+bootstrap_transfer_prerequisites() {
 	ensure_temporary_policy
 
 	log 'bootstrapping curl and CA certificates before release retrieval'
-	apt-get update
-	DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends ca-certificates curl
+	refresh_apt_index
+	DEBIAN_FRONTEND=noninteractive run_package_manager apt-get install --yes --no-install-recommends ca-certificates curl || \
+		die 'cannot install curl and CA certificates (command failed or timed out)'
 }
 
 ensure_transfer_prerequisites() {
@@ -886,9 +958,10 @@ ensure_transfer_prerequisites() {
 install_host_dependencies() {
 	ensure_temporary_policy
 	log 'installing OpenSurge host dependencies with package service autostart suppressed'
-	apt-get update
-	DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-		adduser ca-certificates curl dnsmasq nftables iproute2 systemd
+	refresh_apt_index
+	DEBIAN_FRONTEND=noninteractive run_package_manager apt-get install --yes --no-install-recommends \
+		adduser ca-certificates curl dnsmasq nftables iproute2 systemd || \
+		die 'cannot install OpenSurge host dependencies (command failed or timed out)'
 }
 
 initialize_install_state_paths() {
@@ -901,19 +974,13 @@ service_is_enabled() {
 	local service=$1
 
 	# systemctl uses non-zero status for normal disabled/static states.
-	if systemctl is-enabled "$service" >/dev/null 2>&1; then
-		return 0
-	fi
-	return 1
+	systemctl is-enabled "$service" >/dev/null 2>&1
 }
 
 service_is_active() {
 	local service=$1
 
-	if systemctl is-active --quiet "$service" >/dev/null 2>&1; then
-		return 0
-	fi
-	return 1
+	systemctl is-active --quiet "$service" >/dev/null 2>&1
 }
 
 first_nonlocal_nameserver() {
@@ -1006,8 +1073,12 @@ EOF
 snapshot_resolv_conf() {
 	local resolver_path="$etc_dir/resolv.conf"
 
-	test ! -e "$resolv_conf_backup_path" && ! test -L "$resolv_conf_backup_path" || \
-		die 'resolv.conf backup already exists without an installation manifest'
+	# Reaching here means install_state_exists already found no manifest, so any
+	# stray backup can only be debris from an earlier interrupted installation.
+	if test -e "$resolv_conf_backup_path" || test -L "$resolv_conf_backup_path"; then
+		log 'removing an orphaned resolv.conf backup left by an earlier interrupted installation'
+		rm -f -- "$resolv_conf_backup_path" || die 'cannot remove orphaned resolv.conf backup'
+	fi
 	if test -L "$resolver_path"; then
 		resolv_conf_kind=symlink
 		resolv_conf_backup_exists=1
@@ -1024,27 +1095,19 @@ snapshot_resolv_conf() {
 	fi
 }
 
+as_flag() {
+	if "$@"; then
+		printf 1
+	else
+		printf 0
+	fi
+}
+
 capture_service_state() {
-	if service_is_enabled systemd-resolved.service; then
-		resolved_was_enabled=1
-	else
-		resolved_was_enabled=0
-	fi
-	if service_is_active systemd-resolved.service; then
-		resolved_was_active=1
-	else
-		resolved_was_active=0
-	fi
-	if service_is_enabled dnsmasq.service; then
-		dnsmasq_was_enabled=1
-	else
-		dnsmasq_was_enabled=0
-	fi
-	if service_is_active dnsmasq.service; then
-		dnsmasq_was_active=1
-	else
-		dnsmasq_was_active=0
-	fi
+	resolved_was_enabled=$(as_flag service_is_enabled systemd-resolved.service)
+	resolved_was_active=$(as_flag service_is_active systemd-resolved.service)
+	dnsmasq_was_enabled=$(as_flag service_is_enabled dnsmasq.service)
+	dnsmasq_was_active=$(as_flag service_is_active dnsmasq.service)
 }
 
 replace_resolv_conf() {
@@ -1151,23 +1214,6 @@ reject_fresh_port_53_conflicts() {
 		die "port 53 is already used by an unmanaged listener: $records"
 	fi
 }
-
-manifest_seen=''
-manifest_state_version=''
-manifest_installer_version=''
-manifest_transaction_id=''
-manifest_install_phase=''
-manifest_resolver_was_altered=''
-manifest_resolved_was_altered=''
-manifest_resolved_was_enabled=''
-manifest_resolved_was_active=''
-manifest_dnsmasq_was_altered=''
-manifest_dnsmasq_was_enabled=''
-manifest_dnsmasq_was_active=''
-manifest_resolv_conf_backup_exists=''
-manifest_resolv_conf_kind=''
-manifest_selected_resolver=''
-manifest_resolver_selection=''
 
 record_manifest_field() {
 	local key=$1
@@ -1330,6 +1376,7 @@ download_url() {
 
 	if test "$allow_insecure_test_release" -eq 1; then
 		effective_url=$(curl --fail --location --proto '=http,https,file' --tlsv1.2 \
+			--connect-timeout 15 --max-time 300 \
 			--output "$output" --write-out '%{url_effective}' "$url") || die 'download failed'
 	else
 		case "$url" in
@@ -1337,6 +1384,7 @@ download_url() {
 			*) die 'release downloads must use HTTPS GitHub Release URLs' ;;
 		esac
 		effective_url=$(curl --fail --location --proto '=https' --tlsv1.2 \
+			--connect-timeout 15 --max-time 300 \
 			--output "$output" --write-out '%{url_effective}' "$url") || die 'download failed'
 	fi
 
@@ -1455,15 +1503,25 @@ resolve_offline_package() {
 	local requested_checksums=$2
 	local architecture=$3
 	local package_directory
+	local source_package_path
+	local source_checksum_path
 
-	package_path=$(canonical_regular_file "$requested_deb")
-	package_directory=$(dirname -- "$package_path")
+	source_package_path=$(canonical_regular_file "$requested_deb")
+	package_directory=$(dirname -- "$source_package_path")
 	if test -n "$requested_checksums"; then
-		checksum_path=$(canonical_regular_file "$requested_checksums")
+		source_checksum_path=$(canonical_regular_file "$requested_checksums")
 	else
-		checksum_path=$(canonical_regular_file "$package_directory/SHA256SUMS")
+		source_checksum_path=$(canonical_regular_file "$package_directory/SHA256SUMS")
 	fi
-	validate_package_filename "$package_path" "$architecture"
+	validate_package_filename "$source_package_path" "$architecture"
+
+	# Stage into a root-owned directory so nothing else on the host can swap the
+	# package or checksum manifest between verification and installation.
+	prepare_download_dir
+	package_path="$download_dir/$(basename -- "$source_package_path")"
+	checksum_path="$download_dir/SHA256SUMS"
+	cp -p -- "$source_package_path" "$package_path" || die 'cannot stage offline package for verification'
+	cp -p -- "$source_checksum_path" "$checksum_path" || die 'cannot stage offline checksum manifest for verification'
 }
 
 main() {
@@ -1582,7 +1640,8 @@ main() {
 	fi
 	restore_temporary_policy
 	create_installer_marker
-	OPENSURGE_INSTALLER_MARKER="$installer_marker_path" dpkg -i "$package_path"
+	OPENSURGE_INSTALLER_MARKER="$installer_marker_path" run_package_manager dpkg -i "$package_path" || \
+		die 'cannot install the OpenSurge package (command failed or timed out)'
 	restore_installer_marker
 	if test "$host_state_transaction_started" -eq 1; then
 		install_phase=package_installed

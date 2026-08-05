@@ -23,7 +23,7 @@
   </g>
   <g filter="url(#shadow)">
     <rect x="326" y="78" width="190" height="176" rx="24" fill="#e3f4ec" stroke="#42a97f" stroke-width="1.75"/>
-    <text class="title" x="421" y="110">Linux gateway / OpenSurge</text>
+    <text class="title" x="421" y="110">OpenSurge</text>
     <rect x="346" y="132" width="150" height="47" rx="12" fill="#f7fcf9" stroke="#69b994" stroke-width="1"/>
     <text class="module" x="421" y="153">DNS</text><text class="small" x="421" y="169">不发 DHCP</text>
     <rect x="346" y="190" width="150" height="47" rx="12" fill="#f7fcf9" stroke="#69b994" stroke-width="1"/>

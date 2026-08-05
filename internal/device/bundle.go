@@ -131,7 +131,10 @@ func WritePolicyBundleSnapshot(path string, bundle PolicyBundle) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpPath, 0o644); err != nil {
+	// 0640, not 0644: this snapshot describes per-device routing policy and lives
+	// under the runtime directory, which is group-readable for the control service
+	// and closed to everyone else.
+	if err := os.Chmod(tmpPath, 0o640); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {

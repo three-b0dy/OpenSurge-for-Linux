@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -23,12 +25,17 @@ const (
 	adminArgonTime      = 3
 	adminArgonMemory    = 64 * 1024
 	adminArgonThreads   = 4
+	// The record is written by root (installer and opensurge-setup) but read by
+	// the unprivileged control service, so it is group-readable by design.
+	adminRecordMode = 0o640
 )
 
 var (
 	ErrAdminAlreadyInitialized = errors.New("administrator is already initialized")
 	ErrAdminNotInitialized     = errors.New("administrator is not initialized")
 	ErrInvalidCredentials      = errors.New("invalid administrator credentials")
+	ErrAdminRecordUnreadable   = errors.New("administrator record is not readable by the control service")
+	ErrInvalidAdminInput       = errors.New("invalid administrator username or password")
 )
 
 // AdminStore persists the one administrator account used by the LAN control
@@ -88,34 +95,37 @@ func (s *FileAdminStore) Set(username, password string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+	if err := os.MkdirAll(s.dir, 0o750); err != nil {
 		return err
 	}
-	return writeAtomic(s.path, append(data, '\n'), 0o600)
+	return writeAdminRecord(s.path, append(data, '\n'))
 }
 
-func (s *FileAdminStore) Reset(username, password string) error {
-	username, data, err := newAdminRecord(username, password)
-	if err != nil {
-		return err
-	}
+// ResetPassword replaces the password of the single existing administrator and
+// returns that account's username. The caller does not supply a username: this
+// control plane has exactly one administrator, whose name was fixed at init.
+func (s *FileAdminStore) ResetPassword(password string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
-		return ErrAdminNotInitialized
+		return "", ErrAdminNotInitialized
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	var record adminRecord
 	if err := json.Unmarshal(current, &record); err != nil {
-		return fmt.Errorf("decode administrator record: %w", err)
+		return "", fmt.Errorf("decode administrator record: %w", err)
 	}
-	if strings.TrimSpace(username) != record.Username {
-		return ErrInvalidCredentials
+	username, data, err := newAdminRecord(record.Username, password)
+	if err != nil {
+		return "", err
 	}
-	return writeAtomic(s.path, append(data, '\n'), 0o600)
+	if err := writeAdminRecord(s.path, append(data, '\n')); err != nil {
+		return "", err
+	}
+	return username, nil
 }
 
 func (s *FileAdminStore) Authenticate(username, password string) error {
@@ -124,6 +134,9 @@ func (s *FileAdminStore) Authenticate(username, password string) error {
 	s.mu.Unlock()
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrAdminNotInitialized
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%w: %s", ErrAdminRecordUnreadable, s.path)
 	}
 	if err != nil {
 		return err
@@ -147,6 +160,33 @@ func (s *FileAdminStore) Authenticate(username, password string) error {
 	return nil
 }
 
+// writeAdminRecord persists the record so the unprivileged control service can
+// always read it back. Both root-owned writers (installer, opensurge-setup) and
+// the service itself use this path, so the group must be granted explicitly:
+// a root-written 0600 file would otherwise make every later login fail.
+func writeAdminRecord(path string, data []byte) error {
+	if err := writeAtomic(path, data, adminRecordMode); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	group, err := user.LookupGroup("opensurge")
+	if err != nil {
+		// A source build or test host may not have the packaged group. The record
+		// is already written, and a root-run control service can still read it.
+		return nil
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return nil
+	}
+	if err := os.Chown(path, 0, gid); err != nil {
+		return fmt.Errorf("set root:opensurge ownership on %s: %w", path, err)
+	}
+	return nil
+}
+
 func derivePassword(password string, salt []byte) []byte {
 	return argon2.IDKey([]byte(password), salt, adminArgonTime, adminArgonMemory, adminArgonThreads, adminKeyLength)
 }
@@ -154,10 +194,13 @@ func derivePassword(password string, salt []byte) []byte {
 func newAdminRecord(username, password string) (string, []byte, error) {
 	username = strings.TrimSpace(username)
 	if username == "" {
-		return "", nil, fmt.Errorf("username is required")
+		return "", nil, fmt.Errorf("%w: username is required", ErrInvalidAdminInput)
 	}
-	if utf8.RuneCountInString(password) < 12 {
-		return "", nil, fmt.Errorf("password must contain at least 12 UTF-8 characters")
+	if password == "" {
+		return "", nil, fmt.Errorf("%w: password is required", ErrInvalidAdminInput)
+	}
+	if !utf8.ValidString(password) {
+		return "", nil, fmt.Errorf("%w: password must be valid UTF-8", ErrInvalidAdminInput)
 	}
 	salt := make([]byte, adminSaltLength)
 	if _, err := rand.Read(salt); err != nil {

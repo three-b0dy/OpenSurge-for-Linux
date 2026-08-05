@@ -26,6 +26,12 @@ if grep -Eq '^(User|Group)=' "$unit_dir/opensurge-gateway.service"; then
 fi
 grep -Fx 'ExecStart=/usr/lib/opensurge/opensurge-gateway --socket /run/opensurge/gateway.sock --config-root /etc/opensurge' "$unit_dir/opensurge-gateway.service"
 
+prerm="$repo_root/packaging/debian/DEBIAN/prerm"
+grep -F '/usr/bin/opensurge stop --config /etc/opensurge/config.yaml >/dev/null 2>&1 || true' "$prerm"
+cleanup_line=$(grep -n -F '/usr/bin/opensurge stop --config /etc/opensurge/config.yaml >/dev/null 2>&1 || true' "$prerm" | head -1 | cut -d: -f1)
+systemd_stop_line=$(grep -n -F 'systemctl stop opensurge-control.service opensurge-gateway.socket opensurge-gateway.service || true' "$prerm" | head -1 | cut -d: -f1)
+test "$cleanup_line" -lt "$systemd_stop_line"
+
 security_conf="$unit_dir/opensurge-control.service.d/security.conf"
 grep -Fx 'SupplementaryGroups=opensurge' "$security_conf"
 grep -Fx 'NoNewPrivileges=true' "$security_conf"

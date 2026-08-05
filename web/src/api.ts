@@ -1,4 +1,4 @@
-import type { APIError, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
+import type { APIError, AuthStatus, ConnectivityResponse, ControlConfig, DevicePolicyDocument, DevicesResponse, DeviceTraffic, Diagnostics, GatewayPlan, NetworkInterfacesResponse, Operation, Overview, PolicySet, ProxyGroup, ProxyHealthSnapshot, ProxyHealthTestResponse, Source } from './types'
 
 export class RequestError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -20,10 +20,15 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try { payload = await response.json() as APIError } catch { /* response was not JSON */ }
     throw new RequestError(response.status, payload.error?.code ?? 'request_failed', payload.error?.message ?? response.statusText)
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
 export const api = {
+  authStatus: () => request<AuthStatus>('/api/v1/auth/status'),
+  authSetup: (username: string, password: string) => request<void>('/api/v1/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  authLogin: (username: string, password: string) => request<void>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  authLogout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   overview: () => request<Overview>('/api/v1/overview'),
   config: () => request<ControlConfig>('/api/v1/config'),
   networkInterfaces: () => request<NetworkInterfacesResponse>('/api/v1/network/interfaces'),

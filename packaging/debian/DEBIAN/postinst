@@ -10,12 +10,15 @@ if ! getent passwd opensurge >/dev/null 2>&1; then
 		--shell /usr/sbin/nologin opensurge
 fi
 
-install -d -o root -g opensurge -m 0750 /etc/opensurge /etc/opensurge/tls
-install -d -o opensurge -g opensurge -m 0750 /var/lib/opensurge /var/lib/opensurge/runtime
-if test -f /etc/opensurge/config.yaml; then
-	chmod 0640 /etc/opensurge/config.yaml
-	chown root:opensurge /etc/opensurge/config.yaml
-fi
+# Create the directories and repair ownership and modes. The rules live in
+# internal/layout so this script and `opensurge-setup reset-permissions` cannot
+# drift apart; run the shipped binary directly because /usr/bin/opensurge-setup
+# is a symlink that dpkg may not have linked yet at this point.
+#
+# Ownership is load-bearing, not cosmetic: root writes this state but the
+# unprivileged control service reads it, and the gateway runs without CAP_CHOWN,
+# so only the directories' setgid bit keeps new files in the opensurge group.
+/usr/lib/opensurge/opensurge-setup reset-permissions >/dev/null
 
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload || true

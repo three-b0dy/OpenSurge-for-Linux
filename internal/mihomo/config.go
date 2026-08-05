@@ -47,6 +47,15 @@ tun:
   enable: true
   stack: {{ .TUNStack }}
   device: {{ .TUNDevice }}
+  # IPv4 is the supported gateway protocol in this phase, and dns.ipv6 above is
+  # false to match. Both address families must be pinned explicitly: left unset,
+  # mihomo also assigns its default IPv6 address, and a host with
+  # net.ipv6.conf.all.disable_ipv6=1 rejects that RTM_NEWADDR with EACCES.
+  # mihomo surfaces the refusal as "configure tun interface: permission denied",
+  # so TUN fails to start for what looks like a privilege problem.
+  inet4-address:
+    - 198.18.0.1/30
+  inet6-address: []
   auto-route: {{ .TUNAutoRoute }}
   auto-redirect: {{ .TUNAutoRedirect }}
   auto-detect-interface: {{ .TUNAutoDetectInterface }}

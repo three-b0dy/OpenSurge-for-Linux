@@ -11,6 +11,10 @@ vi.mock('./api', () => ({
   },
   waitForOperation: vi.fn(async () => ({ id: 'gateway-operation', kind: 'start', state: 'succeeded' })),
   api: {
+    authStatus: vi.fn(async () => ({ initialized: true, authenticated: false })),
+    authSetup: vi.fn(),
+    authLogin: vi.fn(),
+    authLogout: vi.fn(),
     overview: vi.fn(),
     config: vi.fn(async () => ({
       schema_version: 1, revision: 'config-revision',
@@ -149,7 +153,7 @@ describe('OpenSurge app shell', () => {
   })
   afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals() })
 
-  it('stops background updates and explains how to reconnect when authentication expires', async () => {
+  it('stops background updates and shows a login form when authentication expires', async () => {
     const close = vi.fn()
     class TestEventSource {
       constructor(_url: string) {}
@@ -158,13 +162,53 @@ describe('OpenSurge app shell', () => {
     }
     vi.stubGlobal('EventSource', TestEventSource)
     vi.mocked(api.overview).mockRejectedValueOnce(new RequestError(401, 'authentication_required', 'expired'))
+    vi.mocked(api.authStatus).mockResolvedValueOnce({ initialized: true, authenticated: false })
 
     render(<App />)
 
-    expect(await screen.findByRole('heading', { name: 'Web GUI 与 OpenSurge 的安全连接已过期' })).toBeTruthy()
-    expect(screen.getByText('请重新打开 OpenSurge 控制面板并完成会话引导。')).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '登录控制面板' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
     await waitFor(() => expect(close).toHaveBeenCalled())
+  })
+
+  it('lets an administrator log in and returns to the dashboard', async () => {
+    vi.mocked(api.overview).mockRejectedValueOnce(new RequestError(401, 'authentication_required', 'expired'))
+    vi.mocked(api.overview).mockResolvedValue(overview)
+    vi.mocked(api.authStatus).mockResolvedValueOnce({ initialized: true, authenticated: false })
+    vi.mocked(api.authLogin).mockResolvedValueOnce(undefined)
+
+    render(<App />)
+
+    await screen.findByRole('heading', { name: '登录控制面板' })
+    const user = userEvent.setup()
+    const passwordInput = screen.getByLabelText('密码')
+    const loginButton = screen.getByRole('button', { name: '登录' })
+    await waitFor(() => expect(passwordInput.hasAttribute('disabled')).toBe(false))
+    await user.type(passwordInput, 'correct-horse-battery-staple')
+    await user.click(loginButton)
+
+    await waitFor(() => expect(api.authLogin).toHaveBeenCalledWith('admin', 'correct-horse-battery-staple'))
+    expect(await screen.findByRole('heading', { name: '全屋网关，一眼可见' })).toBeTruthy()
+  })
+
+  it('shows the administrator-setup form before the account is initialized', async () => {
+    vi.mocked(api.overview).mockRejectedValueOnce(new RequestError(401, 'authentication_required', 'setup required'))
+    vi.mocked(api.overview).mockResolvedValue(overview)
+    vi.mocked(api.authStatus).mockResolvedValueOnce({ initialized: false, authenticated: false })
+    vi.mocked(api.authSetup).mockResolvedValueOnce(undefined)
+    vi.mocked(api.authLogin).mockResolvedValueOnce(undefined)
+
+    render(<App />)
+
+    await screen.findByRole('heading', { name: '初始化管理员账户' })
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText('密码'), 'correct-horse-battery-staple')
+    await user.type(screen.getByLabelText('确认密码'), 'correct-horse-battery-staple')
+    await user.click(screen.getByRole('button', { name: '创建管理员账户并登录' }))
+
+    expect(api.authSetup).toHaveBeenCalledWith('admin', 'correct-horse-battery-staple')
+    expect(api.authLogin).toHaveBeenCalledWith('admin', 'correct-horse-battery-staple')
+    expect(await screen.findByRole('heading', { name: '全屋网关，一眼可见' })).toBeTruthy()
   })
 
   it('does not present a saved recovery card as an unfinished network recovery', async () => {
@@ -181,16 +225,52 @@ describe('OpenSurge app shell', () => {
     expect(screen.getByRole('button', { name: '启动网关' }).hasAttribute('disabled')).toBe(false)
   })
 
-  it('routes the dashboard start button to network settings without starting the gateway', async () => {
+  // The DHCP takeover mode is the one case that still hands off, because it has to
+  // run through the recovery state machine rather than a direct start.
+  it('routes the dashboard start button to network settings for DHCP takeover', async () => {
     render(<App />)
     const start = await screen.findByRole('button', { name: '启动网关' })
     await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
     await userEvent.click(start)
     expect(await screen.findByRole('heading', { name: '网络与 DHCP 接管' })).toBeTruthy()
     expect(window.location.pathname).toBe('/network')
-    expect(window.location.hash).toBe('')
-    expect(scrollIntoView).not.toHaveBeenCalled()
-    expect(scrollTo).not.toHaveBeenCalled()
+    expect(api.gateway).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('starts the saved mode straight from the dashboard without leaving the page', async () => {
+    vi.mocked(api.overview).mockResolvedValue(overviewFor('same_lan', 'stopped'))
+    vi.mocked(api.gateway).mockResolvedValue({ id: 'start-from-dashboard', kind: 'start', state: 'running' })
+    render(<App />)
+
+    await userEvent.click(await screen.findByRole('button', { name: '启动网关' }))
+
+    // Confirmation is the app's own dialog, not window.confirm, and the user stays
+    // on the dashboard instead of being sent to network settings.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '启动旁路由模式？' })).toBeTruthy()
+    expect(window.location.pathname).not.toBe('/network')
+    expect(api.gateway).not.toHaveBeenCalled()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: '确认启动' }))
+
+    expect(api.gateway).toHaveBeenCalledWith('start')
+    expect(waitForOperation).toHaveBeenCalledWith('start-from-dashboard')
+    expect(await screen.findByText('旁路由模式已启动。')).toBeTruthy()
+    expect(window.location.pathname).not.toBe('/network')
+    expect(screen.getByRole('heading', { name: '全屋网关，一眼可见' })).toBeTruthy()
+  })
+
+  it('stops the saved mode from the dashboard and can be dismissed without acting', async () => {
+    vi.mocked(api.overview).mockResolvedValue(overviewFor('isolated_lan', 'running'))
+    render(<App />)
+
+    await userEvent.click(await screen.findByRole('button', { name: '停止网关' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '停止独立下游 LAN？' })).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(api.gateway).not.toHaveBeenCalled()
   })
 
@@ -237,10 +317,9 @@ describe('OpenSurge app shell', () => {
     vi.mocked(api.overview).mockResolvedValue(overviewFor('same_lan', 'stopped'))
     vi.mocked(api.config).mockResolvedValue(configFor('same_lan'))
     vi.mocked(api.gateway).mockResolvedValue({ id: 'start-same-lan', kind: 'start', state: 'running' })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    window.history.replaceState({}, '', '/network')
     render(<App />)
 
-    await userEvent.click(await screen.findByRole('button', { name: '启动网关' }))
     expect(await screen.findByRole('heading', { name: '网关运行控制' })).toBeTruthy()
     const manualMode = within(document.querySelector('.mode-grid')!).getByRole('button', { name: /旁路由模式/ })
     expect(manualMode.getAttribute('aria-expanded')).toBe('true')
@@ -251,8 +330,10 @@ describe('OpenSurge app shell', () => {
     await waitFor(() => expect(document.querySelectorAll('#network-interface-options option')).toHaveLength(2))
     expect(document.querySelector<HTMLOptionElement>('#network-interface-options option[value="en7"]')?.label).toBe('USB LAN · en7')
     await userEvent.click(screen.getByRole('button', { name: '启动旁路由模式' }))
+    const confirmation = await screen.findByRole('dialog')
+    expect(within(confirmation).getByText(/路由器 DHCP 不会被关闭/)).toBeTruthy()
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认启动' }))
 
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('路由器 DHCP 不会被关闭'))
     expect(api.gateway).toHaveBeenCalledWith('start')
     expect(waitForOperation).toHaveBeenCalledWith('start-same-lan')
     expect(await screen.findByText('旁路由模式已启动。')).toBeTruthy()
@@ -279,14 +360,16 @@ describe('OpenSurge app shell', () => {
     vi.mocked(api.overview).mockResolvedValue(overviewFor('isolated_lan', 'stopped'))
     vi.mocked(api.config).mockResolvedValue(configFor('isolated_lan'))
     vi.mocked(api.gateway).mockResolvedValue({ id: 'start-isolated', kind: 'start', state: 'running' })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    window.history.replaceState({}, '', '/network')
     render(<App />)
 
-    await userEvent.click(await screen.findByRole('button', { name: '启动网关' }))
     expect((await screen.findByLabelText('DHCP 地址池起点')).closest('fieldset')?.hasAttribute('disabled')).toBe(false)
     await userEvent.click(screen.getByRole('button', { name: '启动独立下游 LAN' }))
+    const confirmation = await screen.findByRole('dialog')
+    expect(within(confirmation).getByRole('heading', { name: '启动独立下游 LAN？' })).toBeTruthy()
+    expect(within(confirmation).getByText(/DHCP\/DNS、nftables\/NAT 与 IPv4 forwarding/)).toBeTruthy()
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认启动' }))
 
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('独立下游 LAN 的 DHCP/DNS'))
     expect(api.gateway).toHaveBeenCalledWith('start')
     expect(waitForOperation).toHaveBeenCalledWith('start-isolated')
   })
@@ -295,14 +378,15 @@ describe('OpenSurge app shell', () => {
     vi.mocked(api.overview).mockResolvedValue(overviewFor('same_lan', 'degraded'))
     vi.mocked(api.config).mockResolvedValue(configFor('same_lan'))
     vi.mocked(api.gateway).mockResolvedValue({ id: 'stop-same-lan', kind: 'stop', state: 'running' })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    window.history.replaceState({}, '', '/network')
     render(<App />)
 
-    await userEvent.click(await screen.findByRole('button', { name: '停止网关' }))
     expect((await screen.findByLabelText('网关主机 IPv4')).closest('fieldset')?.hasAttribute('disabled')).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: '停止旁路由模式' }))
+    const confirmation = await screen.findByRole('dialog')
+    expect(within(confirmation).getByText(/设备可能立即断网/)).toBeTruthy()
+    await userEvent.click(within(confirmation).getByRole('button', { name: '确认停止' }))
 
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('设备可能立即断网'))
     expect(api.gateway).toHaveBeenCalledWith('stop')
     expect(waitForOperation).toHaveBeenCalledWith('stop-same-lan')
   })
@@ -310,9 +394,9 @@ describe('OpenSurge app shell', () => {
   it('blocks direct gateway start until edited network configuration is saved', async () => {
     vi.mocked(api.overview).mockResolvedValue(overviewFor('isolated_lan', 'stopped'))
     vi.mocked(api.config).mockResolvedValue(configFor('isolated_lan'))
+    window.history.replaceState({}, '', '/network')
     render(<App />)
 
-    await userEvent.click(await screen.findByRole('button', { name: '启动网关' }))
     const gatewayIPv4 = await screen.findByLabelText('网关主机 IPv4')
     await userEvent.clear(gatewayIPv4)
     await userEvent.type(gatewayIPv4, '192.168.50.1')

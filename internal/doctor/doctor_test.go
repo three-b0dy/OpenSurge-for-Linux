@@ -62,7 +62,7 @@ func TestCheckTopologyReportsSameLANIPv6Limitation(t *testing.T) {
 
 func TestCheckPolicyRouteConflictNamesIPRuleCommand(t *testing.T) {
 	runner := &doctorPolicyRunner{err: errors.New("ip unavailable")}
-	check := checkPolicyRouteConflict(context.Background(), runner)
+	check := checkPolicyRouteConflict(context.Background(), runner, "opensurge-tun")
 	if check.OK || !strings.Contains(check.Message, "ip -j rule show") {
 		t.Fatalf("checkPolicyRouteConflict() = %#v", check)
 	}

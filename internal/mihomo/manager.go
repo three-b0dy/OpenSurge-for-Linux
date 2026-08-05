@@ -27,6 +27,11 @@ const (
 	configValidationTimeout   = 90 * time.Second
 	tunStartupTimeout         = 10 * time.Second
 	startupProcessStopTimeout = 3 * time.Second
+	// apiReadyTimeout budgets for mihomo forking, binding its control socket,
+	// and answering an HTTP request. 2s was too tight on slower ARM boards,
+	// especially right after Reload's Stop+Start under concurrent nftables/DHCP
+	// work; align it with tunStartupTimeout's order of magnitude.
+	apiReadyTimeout = 10 * time.Second
 )
 
 func New(cfg config.Config, paths runtime.Paths) Manager {
@@ -82,7 +87,7 @@ func (m Manager) Start() (int, error) {
 		m.stopStartedProcess(pid)
 		return 0, err
 	}
-	if err := m.waitForAPI(pid, 2*time.Second); err != nil {
+	if err := m.waitForAPI(pid, apiReadyTimeout); err != nil {
 		m.stopStartedProcess(pid)
 		return 0, err
 	}

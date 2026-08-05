@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -144,5 +145,40 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.Chmod(tmpPath, mode); err != nil {
 		return err
 	}
+	if err := preserveReplacedGroup(path, tmpPath); err != nil {
+		return err
+	}
 	return os.Rename(tmpPath, path)
+}
+
+// preserveReplacedGroup carries the group of the file being replaced onto its
+// successor. Group ownership is load-bearing here: /etc/opensurge/config.yaml is
+// root:opensurge so the unprivileged control service can read it, and a rewrite
+// that silently produced root:root would stop the gateway from starting.
+//
+// The packaged directories are setgid, which already gives the temporary file the
+// right group. This is the fallback for a host whose directories lost that bit,
+// and it is deliberately best-effort: the gateway helper runs without CAP_CHOWN,
+// so chown there fails with EPERM and the setgid inheritance is what applies.
+func preserveReplacedGroup(path, tmpPath string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		// Nothing is being replaced, so there is no group to carry over.
+		return nil
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+	tmpInfo, err := os.Stat(tmpPath)
+	if err != nil {
+		return err
+	}
+	if tmpStat, ok := tmpInfo.Sys().(*syscall.Stat_t); ok && tmpStat.Gid == stat.Gid {
+		return nil
+	}
+	if err := os.Chown(tmpPath, -1, int(stat.Gid)); err != nil && !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	return nil
 }

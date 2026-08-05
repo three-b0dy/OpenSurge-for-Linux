@@ -97,7 +97,7 @@ func callGateway(t *testing.T, request HelperRequest) HelperResponse {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close() })
-	go handleGatewayConn(context.Background(), server, t.TempDir())
+	go handleGatewayConn(context.Background(), server, singleRoot(t.TempDir()))
 	if err := json.NewEncoder(client).Encode(request); err != nil {
 		t.Fatal(err)
 	}

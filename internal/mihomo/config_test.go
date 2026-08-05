@@ -279,6 +279,29 @@ func TestRenderConfigWithTUN(t *testing.T) {
 	}
 }
 
+// Without explicit addresses mihomo assigns its default dual-stack pair to the
+// TUN device. On a host with net.ipv6.conf.all.disable_ipv6=1 the kernel answers
+// the IPv6 RTM_NEWADDR with EACCES, which mihomo reports as the misleading
+// "configure tun interface: permission denied" and TUN never starts. This phase
+// is IPv4-only, so the rendered config has to pin IPv4 and suppress IPv6.
+func TestRenderTUNPinsIPv4AndSuppressesIPv6Address(t *testing.T) {
+	cfg := config.Default()
+	cfg.Transparent.Mode = config.TransparentModeTUN
+	rendered, err := RenderConfig(cfg)
+	if err != nil {
+		t.Fatalf("RenderConfig() error = %v", err)
+	}
+	for _, want := range []string{
+		"  inet4-address:",
+		"    - 198.18.0.1/30",
+		"  inet6-address: []",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered TUN config missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestRenderTUNEnablesLinuxAutoRedirect(t *testing.T) {
 	cfg := config.Default()
 	cfg.Gateway.LANIP = "10.77.42.1"

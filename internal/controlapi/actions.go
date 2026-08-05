@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -234,11 +236,11 @@ func ServeGateway(ctx context.Context, socketPath, allowedRoot, socketGroup stri
 			}
 			return err
 		}
-		go handleGatewayConn(ctx, conn, allowedRoot)
+		go handleGatewayConn(ctx, conn, newTrustedRoots(allowedRoot))
 	}
 }
 
-func handleGatewayConn(ctx context.Context, conn net.Conn, allowedRoot string) {
+func handleGatewayConn(ctx context.Context, conn net.Conn, roots trustedRoots) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
 	var request HelperRequest
@@ -253,7 +255,7 @@ func handleGatewayConn(ctx context.Context, conn net.Conn, allowedRoot string) {
 	}
 	configPath, err := filepath.Abs(request.ConfigPath)
 	if err == nil && configPath != "" {
-		root, rootErr := filepath.Abs(allowedRoot)
+		root, rootErr := filepath.Abs(roots.config)
 		if rootErr != nil || (configPath != root && !strings.HasPrefix(configPath, root+string(os.PathSeparator))) {
 			err = fmt.Errorf("config path is outside allowed root")
 		}
@@ -266,23 +268,23 @@ func handleGatewayConn(ctx context.Context, conn net.Conn, allowedRoot string) {
 		cfg, err = loadGatewayConfig(action, configPath)
 	}
 	if err == nil {
-		err = requireTrustedRuntime(cfg, allowedRoot)
+		err = requireTrustedRuntime(cfg, roots)
 	}
 	if err == nil && (action == GatewayStart || action == GatewayReload || action == GatewayRestartMihomo || action == GatewayApplyProfile) {
-		err = requireTrustedStartInputs(cfg, allowedRoot)
+		err = requireTrustedStartInputs(cfg, roots)
 	}
 	if err == nil && (action == GatewayApplyProfile || action == GatewayApplyControlConfig) {
-		err = requireTrustedDirectory(filepath.Join(filepath.Dir(configPath), "data"), allowedRoot)
+		err = requireTrustedDirectory(filepath.Join(filepath.Dir(configPath), "data"), roots.config)
 	}
 	if err == nil && action == GatewayApplyDevicePolicy {
 		if cfg.DevicePolicy.File == "" {
 			err = fmt.Errorf("device_policy.file is not configured")
 		} else {
-			err = requireTrustedFile(cfg.DevicePolicy.File, allowedRoot, false)
+			err = requireTrustedFile(cfg.DevicePolicy.File, false, roots.config, roots.state)
 		}
 	}
 	if err == nil && action == GatewayApplyDevicePolicy {
-		err = requireTrustedStartInputs(cfg, allowedRoot)
+		err = requireTrustedStartInputs(cfg, roots)
 	}
 	response := HelperResponse{}
 	if err == nil {
@@ -340,42 +342,103 @@ func requireRootOwnedConfig(path string) error {
 	return nil
 }
 
-func requireTrustedRuntime(cfg config.Config, allowedRoot string) error {
-	if err := requireTrustedDirectory(cfg.Runtime.Dir, allowedRoot); err != nil {
+// trustedRoots enumerates the directories the privileged helper accepts paths
+// from. The packaged layout deliberately spreads config, persistent state,
+// volatile runtime files, and executables across separate trees, so a single
+// root cannot describe it: /etc/opensurge alone rejects the runtime directory
+// under /var/lib/opensurge and the generated mihomo config under /run.
+type trustedRoots struct {
+	config   string
+	state    string
+	volatile string
+	programs []string
+}
+
+const (
+	defaultStateRoot    = "/var/lib/opensurge"
+	defaultVolatileRoot = "/run/opensurge"
+)
+
+func newTrustedRoots(configRoot string) trustedRoots {
+	return trustedRoots{
+		config:   configRoot,
+		state:    defaultStateRoot,
+		volatile: defaultVolatileRoot,
+		// Executables shipped by the package plus the distribution directories
+		// holding dnsmasq. Every candidate still has to be root-owned and not
+		// group- or other-writable.
+		programs: []string{"/usr/lib/opensurge", "/usr/sbin", "/usr/bin", "/sbin", "/bin"},
+	}
+}
+
+// singleRoot builds a roots set where every purpose shares one directory. Tests
+// and source layouts keep their whole tree under a single path.
+func singleRoot(root string) trustedRoots {
+	return trustedRoots{config: root, state: root, volatile: root, programs: []string{root}}
+}
+
+func (r trustedRoots) stateRoots() []string {
+	return []string{r.state, r.volatile, r.config}
+}
+
+func requireTrustedRuntime(cfg config.Config, roots trustedRoots) error {
+	// The runtime directory holds persistent state; the generated mihomo config
+	// normally lands on tmpfs under /run. Accept either tree for both, so source
+	// layouts that keep them together still validate.
+	if err := requireTrustedDirectory(cfg.Runtime.Dir, roots.stateRoots()...); err != nil {
 		return fmt.Errorf("runtime.dir: %w", err)
 	}
-	if err := requireTrustedOutputPath(cfg.Mihomo.Config, allowedRoot); err != nil {
+	if err := requireTrustedOutputPath(cfg.Mihomo.Config, roots.stateRoots()...); err != nil {
 		return fmt.Errorf("mihomo.config: %w", err)
 	}
 	return nil
 }
 
-func requireTrustedStartInputs(cfg config.Config, allowedRoot string) error {
-	for name, path := range map[string]string{"mihomo.binary": cfg.Mihomo.Binary} {
-		if err := requireTrustedFile(path, allowedRoot, true); err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
+func requireTrustedStartInputs(cfg config.Config, roots trustedRoots) error {
+	if err := requireTrustedFile(cfg.Mihomo.Binary, true, roots.programs...); err != nil {
+		return fmt.Errorf("mihomo.binary: %w", err)
 	}
 	if cfg.DHCP.Enabled {
-		if err := requireTrustedFile(cfg.DHCP.Binary, allowedRoot, true); err != nil {
+		// dhcp.binary is conventionally the bare name "dnsmasq", which the DHCP
+		// manager resolves through PATH at start. Resolve it the same way here so
+		// the trust check applies to the executable that will actually run.
+		binary, err := resolveTrustedProgram(cfg.DHCP.Binary)
+		if err != nil {
+			return fmt.Errorf("dhcp.binary: %w", err)
+		}
+		if err := requireTrustedFile(binary, true, roots.programs...); err != nil {
 			return fmt.Errorf("dhcp.binary: %w", err)
 		}
 	}
 	if cfg.Mihomo.Profile != "" {
-		if err := requireTrustedFile(cfg.Mihomo.Profile, allowedRoot, false); err != nil {
+		if err := requireTrustedFile(cfg.Mihomo.Profile, false, roots.config, roots.state); err != nil {
 			return fmt.Errorf("mihomo.profile: %w", err)
 		}
 	}
 	if cfg.DevicePolicy.File != "" {
-		if err := requireTrustedFile(cfg.DevicePolicy.File, allowedRoot, false); err != nil {
+		if err := requireTrustedFile(cfg.DevicePolicy.File, false, roots.config, roots.state); err != nil {
 			return fmt.Errorf("device_policy.file: %w", err)
 		}
 	}
 	return nil
 }
 
-func requireTrustedDirectory(path, allowedRoot string) error {
-	resolved, err := trustedResolvedPath(path, allowedRoot)
+// resolveTrustedProgram turns a bare program name into the absolute path PATH
+// resolution would pick. Absolute paths are returned unchanged so the caller's
+// containment and ownership checks still decide whether it is acceptable.
+func resolveTrustedProgram(name string) (string, error) {
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return name, nil
+	}
+	resolved, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("%q was not found in PATH", name)
+	}
+	return resolved, nil
+}
+
+func requireTrustedDirectory(path string, allowedRoots ...string) error {
+	resolved, err := trustedResolvedPath(path, allowedRoots...)
 	if err != nil {
 		return err
 	}
@@ -389,8 +452,8 @@ func requireTrustedDirectory(path, allowedRoot string) error {
 	return requireRootOwnedMode(info)
 }
 
-func requireTrustedFile(path, allowedRoot string, executable bool) error {
-	resolved, err := trustedResolvedPath(path, allowedRoot)
+func requireTrustedFile(path string, executable bool, allowedRoots ...string) error {
+	resolved, err := trustedResolvedPath(path, allowedRoots...)
 	if err != nil {
 		return err
 	}
@@ -410,17 +473,17 @@ func requireTrustedFile(path, allowedRoot string, executable bool) error {
 	return nil
 }
 
-func requireTrustedOutputPath(path, allowedRoot string) error {
+func requireTrustedOutputPath(path string, allowedRoots ...string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("must be absolute")
 	}
-	if _, err := trustedPathWithinRoot(path, allowedRoot); err != nil {
+	if _, err := trustedPathWithinRoot(path, allowedRoots...); err != nil {
 		return err
 	}
-	return requireTrustedDirectory(filepath.Dir(path), allowedRoot)
+	return requireTrustedDirectory(filepath.Dir(path), allowedRoots...)
 }
 
-func trustedResolvedPath(path, allowedRoot string) (string, error) {
+func trustedResolvedPath(path string, allowedRoots ...string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("must be absolute")
 	}
@@ -428,23 +491,76 @@ func trustedResolvedPath(path, allowedRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return trustedPathWithinRoot(resolved, allowedRoot)
+	return trustedPathWithinRoot(resolved, allowedRoots...)
 }
 
-func trustedPathWithinRoot(path, allowedRoot string) (string, error) {
-	root, err := filepath.EvalSymlinks(allowedRoot)
-	if err != nil {
-		return "", err
-	}
+// trustedPathWithinRoot accepts a path contained by any one of allowedRoots.
+// Each root is resolved through symlinks first, so a symlinked path cannot
+// escape the tree it appears to be in.
+func trustedPathWithinRoot(path string, allowedRoots ...string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	relative, err := filepath.Rel(root, absolute)
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("path is outside allowed root")
+	// Roots are compared after symlink resolution, so the candidate has to be
+	// resolved the same way or a symlinked ancestor makes a contained path look
+	// external. The path itself may not exist yet (generated config files), so
+	// resolve its deepest existing ancestor and re-append the rest.
+	resolved, err := resolveExistingAncestor(absolute)
+	if err != nil {
+		return "", err
 	}
-	return absolute, nil
+	var resolveErr error
+	resolvedAnyRoot := false
+	for _, allowedRoot := range allowedRoots {
+		if allowedRoot == "" {
+			continue
+		}
+		root, err := filepath.EvalSymlinks(allowedRoot)
+		if err != nil {
+			// A root that does not exist on this host cannot contain the path, but
+			// it must not mask a real containment failure either.
+			resolveErr = err
+			continue
+		}
+		resolvedAnyRoot = true
+		relative, err := filepath.Rel(root, resolved)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		return absolute, nil
+	}
+	if !resolvedAnyRoot && resolveErr != nil {
+		return "", resolveErr
+	}
+	return "", fmt.Errorf("path is outside allowed root")
+}
+
+// resolveExistingAncestor resolves the symlinks of the deepest ancestor of path
+// that exists, then re-appends the components below it. A path whose ancestors
+// are all real directories resolves to itself.
+func resolveExistingAncestor(path string) (string, error) {
+	remainder := ""
+	current := path
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			if remainder == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Reached the filesystem root without finding anything that exists.
+			return path, nil
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
 }
 
 func requireRootOwnedMode(info os.FileInfo) error {

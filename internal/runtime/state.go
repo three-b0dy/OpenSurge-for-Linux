@@ -3,8 +3,11 @@ package runtime
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -65,10 +68,46 @@ func SaveState(path string, state State) error {
 	if err := os.Chmod(tmpPath, 0o640); err != nil {
 		return err
 	}
+	// The gateway writes this state as root, but the unprivileged control service
+	// reads it to report gateway status. Without the group, 0640 root:root makes
+	// every status read fail with a permission error.
+	if err := grantServiceGroup(tmpPath); err != nil {
+		return err
+	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	cleanup = false
+	return nil
+}
+
+// grantServiceGroup tries to hand a root-written file to the opensurge group so
+// the unprivileged control service can read it.
+//
+// This is a best-effort second line of defence, not the primary mechanism: the
+// gateway runs with a capability set that excludes CAP_CHOWN, so chown fails
+// with EPERM there. The packaged runtime directory carries the setgid bit, which
+// makes new files inherit the group without any privileged call. Callers that
+// do run with CAP_CHOWN (opensurge-setup from a TTY) still benefit, and a
+// missing group on a source build is not an error.
+func grantServiceGroup(path string) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	group, err := user.LookupGroup("opensurge")
+	if err != nil {
+		return nil
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return nil
+	}
+	if err := os.Chown(path, 0, gid); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil
+		}
+		return fmt.Errorf("set root:opensurge ownership on %s: %w", path, err)
+	}
 	return nil
 }
 

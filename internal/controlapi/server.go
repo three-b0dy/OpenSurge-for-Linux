@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -319,7 +320,13 @@ func controlConfigFrom(cfg config.Config, revision string) ControlConfig {
 	}
 	return ControlConfig{
 		SchemaVersion: SchemaVersion, Revision: revision,
-		Gateway:      GatewayConfigInput{Mode: cfg.Gateway.Mode, Interface: cfg.Gateway.Interface, LANIP: cfg.Gateway.LANIP, UpstreamInterface: cfg.Gateway.UpstreamInterface},
+		Gateway: GatewayConfigInput{
+			Mode:                        cfg.Gateway.Mode,
+			Interface:                   cfg.Gateway.Interface,
+			LANIP:                       cfg.Gateway.LANIP,
+			UpstreamInterface:           cfg.Gateway.UpstreamInterface,
+			RouterDHCPDisabledConfirmed: cfg.Gateway.RouterDHCPDisabledConfirmed,
+		},
 		DHCP:         DHCPConfigInput{Enabled: cfg.DHCP.Enabled, RangeStart: cfg.DHCP.RangeStart, RangeEnd: cfg.DHCP.RangeEnd, LeaseTime: cfg.DHCP.LeaseTime, Domain: cfg.DHCP.Domain},
 		DNS:          DNSConfigInput{Listen: cfg.DNS.Listen, Upstream: dnsUpstream},
 		Transparent:  TransparentConfigInput{Mode: cfg.Transparent.Mode, StrictRoute: cfg.Transparent.TUNStrictRoute},
@@ -444,7 +451,7 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "admin_initialized", "administrator setup has already been completed")
 			return
 		}
-		if strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "at least 12") {
+		if errors.Is(err, ErrInvalidAdminInput) {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
@@ -482,6 +489,15 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "authentication_required", "username or password is incorrect")
 			return
 		}
+		if errors.Is(err, ErrAdminRecordUnreadable) {
+			// Root-owned 0600 state left by an older installer or password reset.
+			// Say so: the credentials are fine and retrying cannot help.
+			log.Printf("administrator record is unreadable by the control service: %v", err)
+			writeError(w, http.StatusInternalServerError, "admin_record_unreadable",
+				"the administrator record is not readable by the control service; run: chown root:opensurge /var/lib/opensurge/admin.json && chmod 640 /var/lib/opensurge/admin.json")
+			return
+		}
+		log.Printf("administrator authentication failed: %v", err)
 		writeError(w, http.StatusInternalServerError, "login_failed", "administrator authentication failed")
 		return
 	}

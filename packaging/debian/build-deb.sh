@@ -59,11 +59,11 @@ install -m 0755 "$build_dir/opensurge-gateway" "$pkg_root/usr/lib/opensurge/open
 install -m 0755 "$build_dir/opensurge-setup" "$pkg_root/usr/lib/opensurge/opensurge-setup"
 install -m 0755 "$mihomo_bin" "$pkg_root/usr/lib/opensurge/mihomo"
 
-install -d -m 0755 "$pkg_root/lib/systemd/system/opensurge-control.service.d"
-install -m 0644 "$repo_root/packaging/systemd/opensurge-control.service" "$pkg_root/lib/systemd/system/opensurge-control.service"
-install -m 0644 "$repo_root/packaging/systemd/opensurge-gateway.service" "$pkg_root/lib/systemd/system/opensurge-gateway.service"
-install -m 0644 "$repo_root/packaging/systemd/opensurge-gateway.socket" "$pkg_root/lib/systemd/system/opensurge-gateway.socket"
-install -m 0644 "$repo_root/packaging/systemd/opensurge-control.service.d/security.conf" "$pkg_root/lib/systemd/system/opensurge-control.service.d/security.conf"
+install -d -m 0755 "$pkg_root/usr/lib/systemd/system/opensurge-control.service.d"
+install -m 0644 "$repo_root/packaging/systemd/opensurge-control.service" "$pkg_root/usr/lib/systemd/system/opensurge-control.service"
+install -m 0644 "$repo_root/packaging/systemd/opensurge-gateway.service" "$pkg_root/usr/lib/systemd/system/opensurge-gateway.service"
+install -m 0644 "$repo_root/packaging/systemd/opensurge-gateway.socket" "$pkg_root/usr/lib/systemd/system/opensurge-gateway.socket"
+install -m 0644 "$repo_root/packaging/systemd/opensurge-control.service.d/security.conf" "$pkg_root/usr/lib/systemd/system/opensurge-control.service.d/security.conf"
 
 install -d -m 0755 "$pkg_root/etc/opensurge" "$pkg_root/usr/share/doc/opensurge"
 install -m 0644 "$repo_root/examples/config.example.yaml" "$pkg_root/usr/share/doc/opensurge/config.example.yaml"

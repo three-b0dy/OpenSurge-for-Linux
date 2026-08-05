@@ -44,7 +44,7 @@ func Run(cfg config.Config) Report {
 		checkInterface(cfg.Gateway.Interface),
 		checkInterface(cfg.Gateway.UpstreamInterface),
 		checkTopology(ctx, cfg, linuxnet.NewIPRoute(commandRunner.Output)),
-		checkPolicyRouteConflict(ctx, commandRunner),
+		checkPolicyRouteConflict(ctx, commandRunner, cfg.Transparent.TUNDevice),
 		checkIPv4("LAN IP", cfg.Gateway.LANIP),
 		checkInterfaceIPv4(cfg.Gateway.Interface, cfg.Gateway.LANIP),
 	}
@@ -62,8 +62,8 @@ func checkTopology(ctx context.Context, cfg config.Config, inspector linuxnet.In
 	return Check{Name: "Linux topology preflight", OK: true, Message: message}
 }
 
-func checkPolicyRouteConflict(ctx context.Context, runner process.Runner) Check {
-	if err := gateway.DetectPolicyRouteConflict(ctx, runner); err != nil {
+func checkPolicyRouteConflict(ctx context.Context, runner process.Runner, tunDevice string) Check {
+	if err := gateway.DetectPolicyRouteConflict(ctx, runner, tunDevice); err != nil {
 		return Check{Name: "Linux policy routing (ip -j rule show)", OK: false, Message: err.Error()}
 	}
 	return Check{Name: "Linux policy routing (ip -j rule show)", OK: true, Message: "no conflict in mihomo reserved priority range"}

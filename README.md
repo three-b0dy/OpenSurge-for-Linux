@@ -96,7 +96,7 @@ sudo bash ./opensurge-install \
 忘记密码时，可在有控制 TTY 的主机上执行：
 
 ```sh
-sudo opensurge-setup reset-password --username admin
+sudo opensurge-setup reset-password
 ```
 
 首次默认配置是安全的 `same_lan` 控制平面：安装器使用 IPv4 默认路由的精确接口名和

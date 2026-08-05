@@ -25,7 +25,7 @@
   </g>
   <g filter="url(#shadow)">
     <rect x="272" y="78" width="176" height="174" rx="24" fill="#102a21" stroke="#63d5a4" stroke-width="1.75"/>
-    <text class="title" x="360" y="110">Linux gateway / OpenSurge</text>
+    <text class="title" x="360" y="110">OpenSurge</text>
     <rect x="288" y="131" width="67" height="53" rx="11" fill="#0d201a" stroke="#4dad83" stroke-width="1"/>
     <text class="module" x="321" y="153">上游接口</text><text class="small" x="321" y="172">连接路由器</text>
     <rect x="365" y="131" width="67" height="53" rx="11" fill="#0d201a" stroke="#4dad83" stroke-width="1"/>

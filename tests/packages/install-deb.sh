@@ -322,7 +322,7 @@ expect_direct_dpkg_install_failure() {
 	assert_contains "$output" 'opensurge-install'
 	[[ $(readlink /etc/resolv.conf) == "$before_resolver_target" ]] || fail 'direct install changed resolver representation'
 	[[ ! -e /usr/bin/opensurge && ! -L /usr/bin/opensurge ]] || fail 'direct install unpacked OpenSurge files'
-	[[ ! -e /lib/systemd/system/opensurge-gateway.service ]] || fail 'direct install unpacked systemd units'
+	[[ ! -e /usr/lib/systemd/system/opensurge-gateway.service ]] || fail 'direct install unpacked systemd units'
 	[[ ! -e /var/lib/opensurge/install-state/manifest ]] || fail 'direct install created ownership state'
 	assert_not_contains "$command_log" 'systemctl'
 	PATH="$fixture_bin:$PATH" dpkg --purge opensurge >/dev/null 2>&1 || true
@@ -373,7 +373,7 @@ assert_controlled_install() {
 	[[ -x /usr/bin/opensurge ]] || fail 'controlled installer did not install opensurge'
 	[[ -x /usr/bin/opensurge-setup ]] || fail 'controlled installer did not install opensurge-setup'
 	[[ -x /usr/lib/opensurge/mihomo ]] || fail 'controlled installer did not install mihomo'
-	[[ -f /lib/systemd/system/opensurge-gateway.socket ]] || fail 'controlled installer did not install gateway socket'
+	[[ -f /usr/lib/systemd/system/opensurge-gateway.socket ]] || fail 'controlled installer did not install gateway socket'
 	[[ -f /var/lib/opensurge/admin.json && ! -L /var/lib/opensurge/admin.json ]] || fail 'installer did not initialize an administrator'
 	assert_file_mode /var/lib/opensurge/admin.json 600
 	assert_file_mode /var/lib/opensurge/install-state/manifest 600

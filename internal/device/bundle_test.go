@@ -34,6 +34,30 @@ func TestPolicyBundleSnapshotRoundTripPreservesDigestAndCompiledPolicy(t *testin
 	}
 }
 
+// The snapshot lands in the runtime directory, which is root-owned and
+// group-readable for the control service. 0644 would expose per-device routing
+// policy to every local account.
+func TestPolicyBundleSnapshotIsNotWorldReadable(t *testing.T) {
+	bundle, err := CompilePolicyBundle(PolicySet{
+		Profiles: []Profile{{ID: "home", DefaultPolicies: []string{"DIRECT"}}},
+		Devices:  []ManagedDevice{{ID: "phone", MAC: "aa:bb:cc:dd:ee:01", IPv4: "192.168.50.101", Profile: "home"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "device-policy.applied.json")
+	if err := WritePolicyBundleSnapshot(path, bundle); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("snapshot mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
 func TestPolicyBundleSnapshotPreservesPausedIPOnlyCompilation(t *testing.T) {
 	set := PolicySet{
 		Profiles: []Profile{{ID: "home", DefaultPolicies: []string{"DIRECT"}}},

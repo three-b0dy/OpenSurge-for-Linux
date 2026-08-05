@@ -74,7 +74,7 @@ assert_file_mode() {
 	local expected=$2
 	local actual
 
-	actual=$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file")
+	actual=$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file")
 	test "$actual" = "$expected" || fail "mode for $file = $actual, want $expected"
 }
 
@@ -185,7 +185,7 @@ if test "$#" -eq 2 && test "$1" = -i; then
 		*) exit 46 ;;
 	esac
 	test -f "$marker" && ! test -L "$marker" || exit 47
-	marker_mode=$(stat -f '%Lp' "$marker" 2>/dev/null || stat -c '%a' "$marker")
+	marker_mode=$(stat -c '%a' "$marker" 2>/dev/null || stat -f '%Lp' "$marker")
 	test "$marker_mode" = 600 || exit 48
 	marker_name=${marker##*/}
 	transaction_id=${marker_name#transaction-}
@@ -253,13 +253,22 @@ case "$1:$2:$3" in
 		esac
 		;;
 	link:show:dev)
-		case "${5:-}" in
+		# Real iproute2 (6.15+) rejects a "--" end-of-options marker for this
+		# subcommand's positional syntax, so the installer must never pass one;
+		# match the trailing argument regardless of position to catch it.
+		case "$*" in
+			*' --'*) exit 1 ;;
+		esac
+		case "${*: -1}" in
 			eth0|ens18|enp1s0.50|br-lan) exit 0 ;;
 			*) exit 1 ;;
 		esac
 		;;
 	-4:addr:show)
-		case "${6:-}" in
+		case "$*" in
+			*' --'*) exit 1 ;;
+		esac
+		case "${*: -1}" in
 			br-lan)
 				case "$scenario" in
 					missing-lan-address) ;;
@@ -456,9 +465,10 @@ test -z "${OPENSURGE_INSTALLER_TEST_ADMIN_PASSWORD:-}"
 IFS= read -r password <&"$password_fd"
 test "${#password}" -ge 12
 test "${OPENSURGE_INSTALLER_TEST_SETUP_FAIL:-0}" != 1
-mkdir -p "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge"
-printf '%s\n' '{"username":"admin","hash":"fixture"}' >"$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
-chmod 0600 "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
+	mkdir -p "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge"
+	printf '%s\n' '{"username":"admin","hash":"fixture"}' >"$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
+	chmod 0600 "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
+	chown root:opensurge "$OPENSURGE_INSTALLER_ROOT/var/lib/opensurge/admin.json"
 EOF
 	chmod 0755 "$fake_bin/opensurge-setup"
 }
@@ -598,6 +608,7 @@ expect_success() {
 	test -s "$observed_installer_marker" || fail 'dpkg did not receive an installer marker'
 	assert_file_missing "$(<"$observed_installer_marker")"
 	assert_file_equals "$test_root/root/var/lib/opensurge/admin.json" $'{"username":"admin","hash":"fixture"}\n'
+	assert_contains "$captured_commands" "chown root:opensurge $test_root/root/var/lib/opensurge/admin.json"
 	assert_fake_service_state opensurge-gateway.socket enabled-active
 	assert_fake_service_state opensurge-control.service enabled-active
 }
@@ -624,7 +635,7 @@ expect_fresh_administrator_setup_is_pipe_only_and_redacted() {
 	assert_not_contains "$installer_log" "$test_secret"
 	assert_not_contains "$config_path" "$test_secret"
 	assert_not_contains "$test_root/root/var/lib/opensurge/install-state/manifest" "$test_secret"
-	assert_contains "$captured_commands" 'curl --fail --silent --show-error --insecure https://192.0.2.10:61767/api/v1/auth/status'
+	assert_contains "$captured_commands" 'curl --fail --silent --show-error --insecure --connect-timeout 5 --max-time 10 https://192.0.2.10:61767/api/v1/auth/status'
 	assert_fake_service_state opensurge-gateway.socket enabled-active
 	assert_fake_service_state opensurge-control.service enabled-active
 }
@@ -640,6 +651,7 @@ expect_existing_administrator_skips_setup() {
 	run_installer --version v1.2.3 || fail 'installer rejected an existing administrator state'
 	assert_command_not_invoked "$captured_commands" opensurge-setup
 	assert_file_equals "$test_root/root/var/lib/opensurge/admin.json" $'{"username":"admin","hash":"preserved"}\n'
+	assert_not_contains "$captured_commands" 'chown opensurge:opensurge'
 	assert_not_contains "$fake_tty" "$test_secret"
 	assert_contains "$installer_log" 'preserved existing OpenSurge administrator state'
 }
@@ -823,6 +835,15 @@ expect_gateway_is_used_when_resolver_is_local() {
 	assert_regular_resolv_conf 'nameserver 192.0.2.1'
 }
 
+expect_orphaned_resolv_conf_backup_is_reclaimed() {
+	begin_host_state_case
+	mkdir -p "$test_root/root/var/lib/opensurge/install-state"
+	printf 'nameserver 198.51.100.9\n' >"$test_root/root/var/lib/opensurge/install-state/resolv.conf.before"
+	run_installer --version v1.2.3 || \
+		fail 'installer rejected an orphaned resolv.conf backup left without an installation manifest'
+	assert_contains "$installer_log" 'removing an orphaned resolv.conf backup left by an earlier interrupted installation'
+}
+
 expect_no_resolver_source_aborts_before_host_mutation() {
 	begin_host_state_case
 	mkdir -p "$(dirname "$config_path")"
@@ -892,6 +913,27 @@ expect_temporary_policy_is_removed_after_dependency_failure() {
 	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_file_missing "$fake_bin/policy-rc.d"
 	assert_not_contains "$captured_commands" 'dpkg -i'
+}
+
+expect_orphaned_installer_policy_is_reclaimed() {
+	begin_host_state_case
+	printf '#!/bin/sh\n# OpenSurge installer temporary no-autostart policy 19700101T000000Z-1\nexit 101\n' \
+		>"$fake_bin/policy-rc.d"
+	chmod 0755 "$fake_bin/policy-rc.d"
+	run_installer --version v1.2.3 || \
+		fail 'installer rejected an orphaned no-autostart policy from an earlier interrupted run'
+	assert_contains "$installer_log" 'reclaiming an orphaned no-autostart policy left by an earlier interrupted installation'
+	assert_file_missing "$fake_bin/policy-rc.d"
+}
+
+expect_apt_index_is_refreshed_once_when_bootstrap_runs() {
+	local update_count
+
+	begin_host_state_case
+	OPENSURGE_TEST_TRANSFER_PREREQUISITES=missing run_installer --version v1.2.3 || \
+		fail 'installer rejected bootstrap with missing transfer prerequisites'
+	update_count=$(grep -F -c -- 'apt-get update' "$captured_commands" || true)
+	test "$update_count" -eq 1 || fail "expected exactly one apt-get update invocation, got $update_count"
 }
 
 expect_upgrade_skips_port_53_rejection() {
@@ -1027,6 +1069,16 @@ expect_fail_when_online_url_is_not_https() {
 	assert_contains "$captured_stderr" 'test path overrides require OPENSURGE_INSTALLER_TEST=1'
 }
 
+expect_clean_production_environment_reaches_root_check() {
+	: >"$captured_stdout"
+	: >"$captured_stderr"
+	: >"$captured_commands"
+	if PATH="$fake_bin:$PATH" bash "$installer" --version v1.2.3 >"$captured_stdout" 2>"$captured_stderr"; then
+		fail 'installer accepted invocation without root privileges outside test mode'
+	fi
+	assert_contains "$captured_stderr" 'must be run as root'
+}
+
 expect_transfer_bootstrap_is_no_autostart_and_redacted() {
 	: >"$captured_stdout"
 	: >"$captured_stderr"
@@ -1075,7 +1127,7 @@ expect_transfer_bootstrap_preserves_existing_policy() {
 		fail 'installer rejected an existing package service policy in the fixture'
 	fi
 	assert_contains "$fake_bin/policy-rc.d" '# user policy'
-	assert_contains "$installer_log" 'existing policy-rc.d controls package service policy during transfer bootstrap'
+	assert_contains "$installer_log" 'existing policy-rc.d controls package service policy during dependency installation'
 	assert_not_contains "$installer_log" "$test_secret"
 }
 
@@ -1092,8 +1144,11 @@ expect_offline_final_symlink_uses_target_and_adjacent_checksum() {
 	ln -s '../offline-target/opensurge_1.2.3_amd64.deb' "$linked_deb"
 	canonical_target_deb="$(cd -P "$target_dir" && pwd)/opensurge_1.2.3_amd64.deb"
 	expect_success --deb "$linked_deb"
-	assert_contains "$captured_commands" "$canonical_target_deb"
-	assert_not_contains "$captured_commands" "$linked_deb"
+	assert_contains "$captured_commands" "cp -p -- $canonical_target_deb"
+	assert_not_contains "$captured_commands" "dpkg-deb -f $linked_deb Architecture"
+	assert_not_contains "$captured_commands" "dpkg -i $linked_deb"
+	assert_not_contains "$captured_commands" "dpkg-deb -f $canonical_target_deb Architecture"
+	assert_not_contains "$captured_commands" "dpkg -i $canonical_target_deb"
 }
 
 mkdir -p "$fake_bin"
@@ -1162,6 +1217,7 @@ expect_fail_when_deb_name_does_not_match_arch
 expect_fail_when_dpkg_deb_arch_is_wrong
 expect_fail_when_offline_checksum_is_missing
 expect_fail_when_online_url_is_not_https
+expect_clean_production_environment_reaches_root_check
 expect_transfer_bootstrap_is_no_autostart_and_redacted
 expect_transfer_bootstrap_preserves_modified_temporary_policy
 expect_transfer_bootstrap_preserves_replaced_temporary_policy
@@ -1174,12 +1230,15 @@ expect_offline_final_symlink_uses_target_and_adjacent_checksum
 expect_resolved_symlink_is_snapshotted_and_replaced
 expect_nonlocal_ipv6_resolver_is_preserved
 expect_gateway_is_used_when_resolver_is_local
+expect_orphaned_resolv_conf_backup_is_reclaimed
 expect_no_resolver_source_aborts_before_host_mutation
 expect_fresh_port_53_conflict_aborts_without_killing_listener
 expect_fresh_port_53_conflict_reports_each_protocol
 expect_disabled_dnsmasq_is_not_touched
 expect_existing_policy_survives_host_dependency_install
 expect_temporary_policy_is_removed_after_dependency_failure
+expect_orphaned_installer_policy_is_reclaimed
+expect_apt_index_is_refreshed_once_when_bootstrap_runs
 expect_upgrade_skips_port_53_rejection
 expect_failure_rolls_back_owned_dns_state
 expect_failed_resolved_disable_restores_recorded_state

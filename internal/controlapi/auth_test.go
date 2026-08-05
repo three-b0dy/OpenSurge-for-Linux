@@ -2,6 +2,7 @@ package controlapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,8 +38,53 @@ func TestAdminStorePersistsArgon2idRecordWithRestrictedPermissions(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("admin record mode=%o", info.Mode().Perm())
+	// 0640, not 0600: root writes this record (installer and opensurge-setup) but
+	// the unprivileged control service has to read it back on every login.
+	if info.Mode().Perm() != adminRecordMode {
+		t.Fatalf("admin record mode=%o, want %o", info.Mode().Perm(), adminRecordMode)
+	}
+}
+
+func TestResetPasswordKeepsTheRecordReadableForTheControlService(t *testing.T) {
+	store := NewFileAdminStore(t.TempDir())
+	if err := store.Set("admin", "initial-password"); err != nil {
+		t.Fatal(err)
+	}
+	username, err := store.ResetPassword("short")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if username != "admin" {
+		t.Fatalf("reset username = %q, want admin", username)
+	}
+	if err := store.Authenticate("admin", "short"); err != nil {
+		t.Fatalf("reset password does not authenticate: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(store.Dir(), adminRecordFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != adminRecordMode {
+		t.Fatalf("record mode after reset = %o, want %o", info.Mode().Perm(), adminRecordMode)
+	}
+}
+
+func TestAuthenticateReportsAnUnreadableRecordDistinctly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permission checks")
+	}
+	store := NewFileAdminStore(t.TempDir())
+	if err := store.Set("admin", "initial-password"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir(), adminRecordFilename)
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, adminRecordMode) })
+	err := store.Authenticate("admin", "initial-password")
+	if !errors.Is(err, ErrAdminRecordUnreadable) {
+		t.Fatalf("error = %v, want ErrAdminRecordUnreadable", err)
 	}
 }
 

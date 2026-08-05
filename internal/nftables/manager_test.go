@@ -3,7 +3,9 @@ package nftables
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
@@ -103,6 +105,56 @@ func TestManagerLoadedListsNamedTable(t *testing.T) {
 	want := []string{"nft", "list", "table", "inet", "opensurge"}
 	if got := runner.Args(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Loaded() args = %#v, want %#v", got, want)
+	}
+}
+
+// The control service lists the table without CAP_NET_ADMIN on every status
+// read. That has to stay distinguishable from a missing or broken ruleset.
+func TestUnprivilegedListFailureIsDistinguishableFromAMissingTable(t *testing.T) {
+	unprivileged := errors.New("Operation not permitted (you must be root)\nnetlink: Error: cache initialization failed: Operation not permitted")
+	if !IsUnprivileged(unprivileged) {
+		t.Error("IsUnprivileged() = false for an nft privilege failure")
+	}
+	if IsUnprivileged(errors.New("Error: table opensurge does not exist")) {
+		t.Error("IsUnprivileged() = true for a missing table")
+	}
+	if IsUnprivileged(nil) {
+		t.Error("IsUnprivileged(nil) = true")
+	}
+
+	manager := New(nftTestConfig(), nftTestPaths(), &recordingRunner{outputErr: unprivileged})
+	loaded, err := manager.Loaded()
+	if err == nil || !IsUnprivileged(err) {
+		t.Fatalf("Loaded() error = %v, want a wrapped privilege failure", err)
+	}
+	if loaded {
+		t.Error("Loaded() = true despite failing to list the table")
+	}
+}
+
+// exec.Cmd.Output reports only "exit status N"; the reason nft failed is in
+// ExitError.Stderr. Matching on Error() alone made every real nft failure
+// indistinguishable, so an unprivileged status read looked like a fault.
+func TestCommandFailureClassificationReadsCapturedStderr(t *testing.T) {
+	exitErr := &exec.ExitError{
+		ProcessState: &os.ProcessState{},
+		Stderr:       []byte("Operation not permitted (you must be root)"),
+	}
+	if got := exitErr.Error(); strings.Contains(strings.ToLower(got), "not permitted") {
+		t.Skipf("this Go version already surfaces stderr in Error(): %q", got)
+	}
+	if !IsUnprivileged(exitErr) {
+		t.Error("IsUnprivileged() ignored the captured stderr")
+	}
+	missing := &exec.ExitError{
+		ProcessState: &os.ProcessState{},
+		Stderr:       []byte("Error: No such file or directory"),
+	}
+	if !isMissingTableError(missing) {
+		t.Error("isMissingTableError() ignored the captured stderr")
+	}
+	if isMissingTableError(exitErr) {
+		t.Error("a privilege failure was classified as a missing table")
 	}
 }
 

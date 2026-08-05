@@ -115,7 +115,7 @@ sudo opensurge-setup replace-certificate \
   --key /etc/opensurge/tls/custom-key.pem
 ```
 
-Use `sudo opensurge-setup reset-password --username admin` from a host with a
+Use `sudo opensurge-setup reset-password` from a host with a
 controlling TTY to recover administrator access.
 
 ## Validate and migrate

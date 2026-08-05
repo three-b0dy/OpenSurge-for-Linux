@@ -137,6 +137,9 @@ button{cursor:pointer}
 .session-expired{min-height:calc(100vh - 80px);display:flex;align-items:center;justify-content:center;gap:16px;text-align:left;color:#d8e6e0}
 .session-expired>span{display:grid;place-items:center;width:44px;height:44px;border-radius:50%;background:#321a18;border:1px solid #6b3932;color:#ffad9f;font-size:22px;font-weight:800}
 .session-expired h1{margin:0 0 8px;font-size:22px}.session-expired p{margin:0;color:#8fa39b}
+.auth-gate{min-height:calc(100vh - 80px);display:flex;align-items:center;justify-content:center}
+.auth-gate .auth-card{width:100%;max-width:340px}
+.auth-gate .auth-card h3{margin:3px 0 0;font-size:17px}
 .recovery-banner{display:flex;gap:14px;align-items:center;background:#352b12;border:1px solid #6f5c29;color:#f6dda2;margin-bottom:22px}
 .recovery-banner span{font-size:22px}
 .recovery-banner div{flex:1}

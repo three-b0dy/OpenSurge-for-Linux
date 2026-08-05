@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,6 +32,22 @@ func TestSaveAndLoadState(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("LoadState() = %+v, want %+v", got, want)
+	}
+}
+
+// The gateway writes this file as root and the unprivileged control service
+// reads it for every status query, so it must stay group-readable.
+func TestSaveStateKeepsTheFileGroupReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := SaveState(path, State{PIDMihomo: 202, NftablesLoaded: true}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("state mode = %o, want 640", info.Mode().Perm())
 	}
 }
 

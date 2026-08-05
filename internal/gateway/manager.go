@@ -459,7 +459,7 @@ func (m Manager) preflight(ctx context.Context, dhcpManager dhcpService, mihomoM
 		}
 	}
 	if deps.policyRouteRunner != nil {
-		if err := DetectPolicyRouteConflict(ctx, deps.policyRouteRunner); err != nil {
+		if err := DetectPolicyRouteConflict(ctx, deps.policyRouteRunner, m.cfg.Transparent.TUNDevice); err != nil {
 			return err
 		}
 	}

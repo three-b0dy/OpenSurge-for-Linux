@@ -80,10 +80,11 @@ type ControlConfig struct {
 }
 
 type GatewayConfigInput struct {
-	Mode              string `json:"mode"`
-	Interface         string `json:"interface"`
-	LANIP             string `json:"lan_ip"`
-	UpstreamInterface string `json:"upstream_interface"`
+	Mode                        string `json:"mode"`
+	Interface                   string `json:"interface"`
+	LANIP                       string `json:"lan_ip"`
+	UpstreamInterface           string `json:"upstream_interface"`
+	RouterDHCPDisabledConfirmed bool   `json:"router_dhcp_disabled_confirmed"`
 }
 
 type DHCPConfigInput struct {

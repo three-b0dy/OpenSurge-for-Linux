@@ -1,7 +1,9 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { api, waitForOperation } from '../api'
 import { Mode, PageHeader, SectionTitle } from '../components/Common'
+import { GatewayActionDialog } from '../components/GatewayActionDialog'
 import { NetworkModeDetail } from '../components/NetworkModeDetail'
+import { gatewayActionResult, gatewayModeLabel, type GatewayAction } from '../gatewayControl'
 import { recoveryLabel } from '../status'
 import type { ControlConfig, DevicePolicyDocument, GatewayPlan, NetworkInterfaceOption, Overview, PolicyDevice, PolicySet } from '../types'
 
@@ -34,6 +36,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
   const [clientConfirmed, setClientConfirmed] = useState(false)
   const [ipv6Acknowledged, setIPv6Acknowledged] = useState(false)
   const [policyMigration, setPolicyMigration] = useState<PolicyMigration | null>(null)
+  const [pendingGatewayAction, setPendingGatewayAction] = useState<GatewayAction | null>(null)
   const current = overview?.recovery.stage ?? 'idle'
   const clientCheckpoint = overview?.recovery.client_validation_skipped ? 'client_validation_skipped' : 'client_validated'
   const completion = current === 'complete_static' ? 'complete_static' : 'complete'
@@ -158,19 +161,24 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
     } finally { setBusy(false) }
   }
 
-  const controlGateway = async (action: 'start' | 'stop') => {
+  const requestGatewayAction = (action: GatewayAction) => {
     if (!config || config.gateway.mode === 'same_wifi_dhcp') return
     if (action === 'start' && configDirty) {
       setError('网络配置尚未保存。请先保存配置，再启动网关。')
       return
     }
-    if (!window.confirm(gatewayConfirmation(config.gateway.mode, action))) return
-    setBusy(true); setError(''); setMessage('')
+    setError(''); setMessage(''); setPendingGatewayAction(action)
+  }
+
+  const controlGateway = async () => {
+    if (!config || !pendingGatewayAction) return
+    const action = pendingGatewayAction
+    setBusy(true); setError('')
     try {
-      const operation = await api.gateway(action)
-      await waitForOperation(operation.id)
+      await waitForOperation((await api.gateway(action)).id)
       await onChanged()
-      setMessage(action === 'start' ? `${gatewayModeLabel(config.gateway.mode)}已启动。` : `${gatewayModeLabel(config.gateway.mode)}已停止。`)
+      setMessage(gatewayActionResult(config.gateway.mode, action))
+      setPendingGatewayAction(null)
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     finally { setBusy(false) }
   }
@@ -325,14 +333,14 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
       </section>
     </>}
     {config && config.gateway.mode !== 'same_wifi_dhcp' && <section className="section gateway-lifecycle-control">
-      <SectionTitle title="网关运行控制" subtitle="使用已保存的网络配置启动或停止；总览页的按钮只负责导航到这里" />
+      <SectionTitle title="网关运行控制" subtitle="使用已保存的网络配置启动或停止；总览页的按钮直接执行同一操作" />
       <div className="gateway-lifecycle-row">
         <div>
           <span className={`pill ${gatewayActive ? 'ok' : ''}`}>{gatewayActive ? '运行中' : gatewayStopped ? '已停止' : '状态未知'}</span>
           <strong>{gatewayModeLabel(config.gateway.mode)}</strong>
           <p>{gatewayModeDescription(config)}</p>
         </div>
-        <button ref={gatewayControlRef} id="gateway-control" className={gatewayActive ? 'danger' : 'primary'} type="button" disabled={busy || !overview || (!gatewayActive && !gatewayStopped) || (!gatewayActive && configDirty)} onClick={() => void controlGateway(gatewayActive ? 'stop' : 'start')}>{busy ? '正在执行…' : gatewayActive ? `停止${gatewayModeLabel(config.gateway.mode)}` : `启动${gatewayModeLabel(config.gateway.mode)}`}</button>
+        <button ref={gatewayControlRef} id="gateway-control" className={gatewayActive ? 'danger' : 'primary'} type="button" disabled={busy || !overview || (!gatewayActive && !gatewayStopped) || (!gatewayActive && configDirty)} onClick={() => requestGatewayAction(gatewayActive ? 'stop' : 'start')}>{busy ? '正在执行…' : gatewayActive ? `停止${gatewayModeLabel(config.gateway.mode)}` : `启动${gatewayModeLabel(config.gateway.mode)}`}</button>
       </div>
       {!gatewayActive && configDirty && <div className="notice warn">网络配置有未保存的修改。保存后才能启动网关。</div>}
       {!gatewayActive && !gatewayStopped && <div className="notice warn">当前网关状态无法确认；为避免重复启动，运行控制暂时不可用。</div>}
@@ -380,6 +388,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
       </section>
     </>}
     {policyMigration && <PolicyMigrationDialog migration={policyMigration} busy={busy} onInspect={() => { setPolicyMigration(null); onNavigate('devices') }} onCancel={() => setPolicyMigration(null)} onConfirm={() => void persistConfig(policyMigration.target, policyMigration)} />}
+    {pendingGatewayAction && config && <GatewayActionDialog mode={config.gateway.mode} action={pendingGatewayAction} busy={busy} error={error} onCancel={() => { if (!busy) { setPendingGatewayAction(null); setError('') } }} onConfirm={() => void controlGateway()} />}
   </>
 }
 
@@ -397,25 +406,10 @@ function PolicyMigrationDialog({ migration, busy, onInspect, onCancel, onConfirm
   </dialog>
 }
 
-function gatewayModeLabel(mode: ControlConfig['gateway']['mode']) {
-  return mode === 'same_lan' ? '旁路由模式' : '独立下游 LAN'
-}
-
 function gatewayModeDescription(config: ControlConfig) {
   if (config.gateway.mode === 'same_lan') return '启动 DNS、mihomo TUN、nftables/NAT 与 IPv4 forwarding；路由器 DHCP 保持开启，部分设备需手工把网关和 DNS 指向网关主机。'
   const proxyMode = config.transparent.mode === 'tun' ? 'mihomo TUN 透明代理' : '不启用透明代理'
   return `启动 DHCP/DNS、nftables/NAT 与 IPv4 forwarding；当前配置为${proxyMode}。`
-}
-
-function gatewayConfirmation(mode: ControlConfig['gateway']['mode'], action: 'start' | 'stop') {
-  if (mode === 'same_lan') {
-    return action === 'start'
-      ? '将按已保存配置启动旁路由模式。路由器 DHCP 不会被关闭；部分设备需要自行把网关和 DNS 指向网关主机。继续吗？'
-      : '停止后，仍把网关或 DNS 指向网关主机的设备可能立即断网。确定停止旁路由模式吗？'
-  }
-  return action === 'start'
-    ? '将按已保存配置启动独立下游 LAN 的 DHCP/DNS、nftables/NAT 与 IPv4 forwarding。继续吗？'
-    : '停止后，独立下游 LAN 客户端将失去 OpenSurge 提供的 DHCP/DNS 和网关连接。确定停止吗？'
 }
 
 function RouterAddress({ router, showHint = false }: { router: string; showHint?: boolean }) {

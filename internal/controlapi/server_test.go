@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -245,7 +246,7 @@ func TestGatewayRejectsUserOwnedConfig(t *testing.T) {
 func TestGatewayRejectsActionOutsideWhitelist(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
-	go handleGatewayConn(t.Context(), serverConn, t.TempDir())
+	go handleGatewayConn(t.Context(), serverConn, singleRoot(t.TempDir()))
 	if err := json.NewEncoder(clientConn).Encode(HelperRequest{Action: "shell"}); err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +290,71 @@ func TestGatewayRestartMihomoDefersInvalidDesiredDevicePolicy(t *testing.T) {
 	}
 }
 
+// The packaged layout keeps the config, the runtime state, the generated mihomo
+// config, and the executables in four separate trees. Validating them all
+// against the single --config-root made every gateway lifecycle action fail with
+// "runtime.dir: path is outside allowed root".
+func TestTrustedRootsAcceptThePackagedMultiTreeLayout(t *testing.T) {
+	roots := newTrustedRoots("/etc/opensurge")
+	if roots.state != "/var/lib/opensurge" || roots.volatile != "/run/opensurge" {
+		t.Fatalf("packaged roots = %+v", roots)
+	}
+	if !slices.Contains(roots.programs, "/usr/lib/opensurge") || !slices.Contains(roots.programs, "/usr/sbin") {
+		t.Fatalf("program roots = %v, want the packaged and system binary directories", roots.programs)
+	}
+	// The containment check resolves symlinks, so reproduce the packaged trees
+	// under a temporary root instead of depending on the host layout.
+	base := t.TempDir()
+	layout := trustedRoots{
+		config:   filepath.Join(base, "etc/opensurge"),
+		state:    filepath.Join(base, "var/lib/opensurge"),
+		volatile: filepath.Join(base, "run/opensurge"),
+		programs: []string{filepath.Join(base, "usr/lib/opensurge")},
+	}
+	for _, dir := range []string{layout.config, layout.state, layout.volatile, layout.programs[0], filepath.Join(base, "other")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(layout.state, "runtime"),
+		filepath.Join(layout.volatile, "mihomo.yaml"),
+		filepath.Join(layout.config, "data"),
+	} {
+		if _, err := trustedPathWithinRoot(path, layout.stateRoots()...); err != nil {
+			t.Errorf("state roots rejected %s: %v", path, err)
+		}
+	}
+	if _, err := trustedPathWithinRoot(filepath.Join(layout.programs[0], "mihomo"), layout.programs...); err != nil {
+		t.Errorf("program roots rejected the packaged mihomo binary: %v", err)
+	}
+	for _, path := range []string{filepath.Join(base, "other/runtime"), filepath.Join(base, "etc/shadow")} {
+		if _, err := trustedPathWithinRoot(path, layout.stateRoots()...); err == nil {
+			t.Errorf("state roots accepted %s", path)
+		}
+	}
+}
+
+func TestTrustedPathAcceptsAnyConfiguredRootButStillRejectsEscapes(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	inSecond := filepath.Join(second, "state.json")
+	if err := os.WriteFile(inSecond, []byte("{}"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trustedPathWithinRoot(inSecond, first, second); err != nil {
+		t.Fatalf("path in the second root was rejected: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "state.json")
+	if _, err := trustedPathWithinRoot(outside, first, second); err == nil {
+		t.Fatal("path outside every root was accepted")
+	}
+	// A missing root must not silently widen the set.
+	if _, err := trustedPathWithinRoot(outside, filepath.Join(first, "absent"), second); err == nil {
+		t.Fatal("path outside every existing root was accepted")
+	}
+}
+
 func TestTrustedPathRejectsEscapesAndUserOwnedFiles(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "mihomo")
@@ -303,7 +369,7 @@ func TestTrustedPathRejectsEscapesAndUserOwnedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if os.Geteuid() != 0 {
-		if err := requireTrustedFile(inside, root, true); err == nil {
+		if err := requireTrustedFile(inside, true, root); err == nil {
 			t.Fatal("user-owned executable was accepted")
 		}
 	}
@@ -527,6 +593,41 @@ func TestControlConfigUsesRevisionAndAppliesTopology(t *testing.T) {
 	}
 	if updated.Gateway.Mode != config.GatewayModeSameLAN || updated.DHCP.Enabled {
 		t.Fatalf("updated config=%#v", updated)
+	}
+}
+
+func TestControlConfigPreservesSameWiFiDHCPConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Gateway.Mode = config.GatewayModeSameWiFiDHCP
+	cfg.Gateway.Interface = "lan0"
+	cfg.Gateway.UpstreamInterface = "lan0"
+	cfg.Gateway.LANIP = "192.168.50.1"
+	cfg.DHCP.Enabled = true
+	cfg.Transparent.Mode = config.TransparentModeTUN
+	cfg.Runtime.Dir = filepath.Join(dir, "runtime")
+	cfg.Mihomo.Config = filepath.Join(cfg.Runtime.Dir, "mihomo.yaml")
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(config.Render(cfg)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Gateway.RouterDHCPDisabledConfirmed = true
+	input := controlConfigFrom(cfg, fileDigest(path))
+	payload, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyControlConfig(path, input.Revision, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Gateway.RouterDHCPDisabledConfirmed {
+		t.Fatal("router DHCP confirmation was lost by the control config update")
 	}
 }
 

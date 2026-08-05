@@ -1,6 +1,7 @@
 package nftables
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -87,19 +88,48 @@ func (m Manager) Unload() error {
 	return nil
 }
 
-func isMissingTableError(err error) bool {
+// ErrUnprivileged reports that the caller cannot query nftables at all, as
+// opposed to querying it and learning the table is absent. The control service
+// runs without CAP_NET_ADMIN, so it hits this on every status read and must not
+// mistake it for a missing or broken ruleset.
+var ErrUnprivileged = errors.New("listing nftables requires root or CAP_NET_ADMIN")
+
+// IsUnprivileged reports whether err is a privilege failure from nft.
+func IsUnprivileged(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{
-		"does not exist",
-		"no such file or directory",
-		"not found",
-	} {
-		if strings.Contains(message, marker) {
+	if errors.Is(err, ErrUnprivileged) {
+		return true
+	}
+	return matchesCommandOutput(err, "operation not permitted", "must be root", "permission denied")
+}
+
+// matchesCommandOutput looks for a marker in the error text and, for a failed
+// command, in its captured standard error. exec.Cmd.Output reports only
+// "exit status N" from Error(); the reason nft failed is in ExitError.Stderr.
+func matchesCommandOutput(err error, markers ...string) bool {
+	haystack := strings.ToLower(err.Error())
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		haystack += "\n" + strings.ToLower(string(exitErr.Stderr))
+	}
+	for _, marker := range markers {
+		if strings.Contains(haystack, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func isMissingTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A privilege failure is not a missing table: without this guard an
+	// unprivileged caller would conclude the ruleset had been unloaded.
+	if IsUnprivileged(err) {
+		return false
+	}
+	return matchesCommandOutput(err, "does not exist", "no such file or directory", "not found")
 }

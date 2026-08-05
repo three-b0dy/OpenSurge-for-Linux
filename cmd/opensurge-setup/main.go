@@ -18,6 +18,7 @@ import (
 
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/config"
 	"github.com/three-b0dy/OpenSurge-for-Linux/internal/controlapi"
+	"github.com/three-b0dy/OpenSurge-for-Linux/internal/layout"
 	"golang.org/x/term"
 )
 
@@ -37,6 +38,7 @@ type setupOptions struct {
 	keyPath       string
 	passwordFD    int
 	passwordFDSet bool
+	checkOnly     bool
 }
 
 func main() {
@@ -46,13 +48,77 @@ func main() {
 	}
 }
 
+// wantsSetupUsage reports whether the invocation asks for the command listing
+// instead of a setup action, so help stays available without root.
+func wantsSetupUsage(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "help", "-h", "--help":
+		return true
+	}
+	for _, arg := range args[1:] {
+		if arg == "-h" || arg == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+func printSetupUsage(output io.Writer) {
+	_, _ = fmt.Fprintf(output, `OpenSurge for Linux setup
+
+Usage:
+  opensurge-setup <command> [options]
+
+Commands:
+  init     create the administrator account and the managed HTTPS certificate
+    --username <name>   administrator username (required)
+    --config <path>     gateway configuration path (default %s)
+    --store <path>      control-plane state directory (default %s)
+    --password-fd <fd>  read the password from an inherited pipe descriptor (3 or
+                        higher); reserved for the release installer
+
+  reset-password
+           reset the password of the single existing administrator from a
+           controlling TTY, then print which username was reset
+    --store <path>      control-plane state directory (default %s)
+
+  replace-certificate
+           replace the managed HTTPS certificate and private key
+    --cert <path>       replacement certificate PEM (required)
+    --key <path>        replacement private-key PEM (required); both paths must
+                        remain under %s
+    --config <path>     gateway configuration path (default %s)
+
+  reset-permissions
+           re-apply the ownership and modes OpenSurge requires, and create any
+           missing directories. The installer already does this, so reach for it
+           when a host has drifted: symptoms are HTTPS login failing with a
+           server error, an empty gateway status, or a gateway that will not
+           start. It never touches the administrator password or the certificate.
+    --check             report problems and exit non-zero without changing
+                        anything; the only form that does not require root
+
+All other commands must run as root. init and reset-password read the password
+interactively and never accept it as a command-line argument.
+`, defaultConfigPath, defaultStoreDir, defaultStoreDir, managedTLSDir, defaultConfigPath)
+}
+
 func parseSetupArgs(args []string) (setupOptions, error) {
 	if len(args) == 0 {
-		return setupOptions{}, errors.New("usage: opensurge-setup init|reset-password|replace-certificate")
+		return setupOptions{}, errors.New("usage: opensurge-setup init|reset-password|replace-certificate|reset-permissions; run opensurge-setup --help for options")
 	}
 	options := setupOptions{command: args[0], configPath: defaultConfigPath, storeDir: defaultStoreDir, passwordFD: -1}
-	if args[0] != "init" && hasPasswordFDOption(args[1:]) {
+	if args[0] != "init" && hasOption(args[1:], "password-fd") {
 		return setupOptions{}, errors.New("--password-fd is only supported with init")
+	}
+	// Earlier releases documented `reset-password --username <name>`, where the
+	// name only had to match the stored account. Explain the removal instead of
+	// letting the flag package report an undefined flag.
+	if args[0] == "reset-password" && hasOption(args[1:], "username") {
+		return setupOptions{}, errors.New("reset-password no longer takes --username: it resets the single existing administrator")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -64,11 +130,12 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 		flags.IntVar(&options.passwordFD, "password-fd", options.passwordFD, "inherited installer password pipe descriptor")
 	case "reset-password":
 		flags.StringVar(&options.storeDir, "store", options.storeDir, "control-plane state directory")
-		flags.StringVar(&options.username, "username", "", "administrator username")
 	case "replace-certificate":
 		flags.StringVar(&options.configPath, "config", options.configPath, "gateway configuration path")
 		flags.StringVar(&options.certPath, "cert", "", "replacement certificate PEM")
 		flags.StringVar(&options.keyPath, "key", "", "replacement private-key PEM")
+	case "reset-permissions":
+		flags.BoolVar(&options.checkOnly, "check", false, "report problems without changing anything")
 	default:
 		return setupOptions{}, fmt.Errorf("unknown setup command %q", args[0])
 	}
@@ -83,11 +150,11 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 			options.passwordFDSet = true
 		}
 	})
-	if options.passwordFDSet && options.passwordFD < 0 {
-		return setupOptions{}, errors.New("--password-fd must be a non-negative inherited pipe descriptor")
+	if options.passwordFDSet && options.passwordFD < 3 {
+		return setupOptions{}, errors.New("--password-fd must be an inherited pipe descriptor other than stdin, stdout, or stderr")
 	}
 	switch options.command {
-	case "init", "reset-password":
+	case "init":
 		if strings.TrimSpace(options.username) == "" {
 			return setupOptions{}, errors.New("--username is required")
 		}
@@ -99,22 +166,32 @@ func parseSetupArgs(args []string) (setupOptions, error) {
 	return options, nil
 }
 
-func hasPasswordFDOption(args []string) bool {
+// hasOption reports whether args mention the named option in any of the forms
+// the flag package accepts, so a command can reject it with its own message.
+func hasOption(args []string, name string) bool {
 	for _, arg := range args {
-		if arg == "--password-fd" || strings.HasPrefix(arg, "--password-fd=") {
-			return true
+		for _, prefix := range []string{"-", "--"} {
+			if arg == prefix+name || strings.HasPrefix(arg, prefix+name+"=") {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func run(args []string, stdin *os.File, output io.Writer) error {
-	if os.Geteuid() != 0 {
-		return errors.New("opensurge-setup must run as root")
+	if wantsSetupUsage(args) {
+		printSetupUsage(output)
+		return nil
 	}
 	options, err := parseSetupArgs(args)
 	if err != nil {
 		return err
+	}
+	// Everything here writes privileged state, except the read-only permission
+	// report, which is useful precisely when an operator is still diagnosing.
+	if os.Geteuid() != 0 && !(options.command == "reset-permissions" && options.checkOnly) {
+		return errors.New("opensurge-setup must run as root")
 	}
 	switch options.command {
 	case "init":
@@ -123,6 +200,8 @@ func run(args []string, stdin *os.File, output io.Writer) error {
 		return runResetPassword(options, stdin, output)
 	case "replace-certificate":
 		return runReplaceCertificate(options, output)
+	case "reset-permissions":
+		return runResetPermissions(options, output)
 	default:
 		return fmt.Errorf("unknown setup command %q", options.command)
 	}
@@ -174,11 +253,11 @@ func runInit(options setupOptions, stdin *os.File, output io.Writer) error {
 }
 
 func runResetPassword(options setupOptions, stdin *os.File, output io.Writer) error {
-	password, err := readTTYPassword(stdin, output, "New administrator password: ")
+	password, err := passwordFromTTY(stdin, output, "New administrator password: ")
 	if err != nil {
 		return err
 	}
-	confirmation, err := readTTYPassword(stdin, output, "Repeat administrator password: ")
+	confirmation, err := passwordFromTTY(stdin, output, "Repeat administrator password: ")
 	if err != nil {
 		return err
 	}
@@ -186,11 +265,53 @@ func runResetPassword(options setupOptions, stdin *os.File, output io.Writer) er
 		return errors.New("administrator passwords do not match")
 	}
 	store := controlapi.NewFileAdminStore(options.storeDir)
-	if err := store.Reset(options.username, password); err != nil {
+	username, err := store.ResetPassword(password)
+	if err != nil {
 		return fmt.Errorf("reset administrator password: %w", err)
 	}
-	_, _ = fmt.Fprintln(output, "OpenSurge administrator password reset")
+	_, _ = fmt.Fprintf(output, "OpenSurge administrator password reset for %s\n", username)
 	return nil
+}
+
+func runResetPermissions(options setupOptions, output io.Writer) error {
+	if options.checkOnly {
+		return reportPermissionProblems(output)
+	}
+	_, _ = fmt.Fprintln(output, "Repairing OpenSurge paths, ownership, and modes:")
+	result, err := layout.Apply(output)
+	if err != nil {
+		return err
+	}
+	if len(result.Changes) == 0 {
+		_, _ = fmt.Fprintf(output, "  nothing to repair (%d paths already correct)\n", result.Verified)
+	}
+	// The config and the administrator record are never fabricated: an empty one
+	// would look initialized while being unusable. Their absence is also normal
+	// before setup completes, so report it without failing — this command runs
+	// from the package postinst, before init has had a chance to create them.
+	for _, entry := range result.Missing {
+		_, _ = fmt.Fprintf(output, "  not created: %s — %s\n", entry.Path, entry.Purpose)
+	}
+	_, _ = fmt.Fprintf(output, "Repaired %d path(s); %d already correct.\n", len(result.Changes), result.Verified)
+	return nil
+}
+
+// reportPermissionProblems runs the same comparison without writing, by applying
+// the layout to a throwaway copy of the metadata.
+func reportPermissionProblems(output io.Writer) error {
+	problems, err := layout.Check()
+	if err != nil {
+		return err
+	}
+	if len(problems) == 0 {
+		_, _ = fmt.Fprintln(output, "All OpenSurge paths, ownership, and modes are correct.")
+		return nil
+	}
+	_, _ = fmt.Fprintln(output, "OpenSurge path problems:")
+	for _, problem := range problems {
+		_, _ = fmt.Fprintf(output, "  %s\n", problem)
+	}
+	return fmt.Errorf("%d path problem(s); run opensurge-setup reset-permissions to repair", len(problems))
 }
 
 func runReplaceCertificate(options setupOptions, output io.Writer) error {
@@ -288,8 +409,8 @@ func readTTYPassword(stdin *os.File, output io.Writer, prompt string) (string, e
 // passed by the release installer. It deliberately duplicates rather than
 // closes the caller-owned descriptor, so only the child process consumes it.
 func readPasswordFromInheritedPipe(fd int) (string, error) {
-	if fd < 0 {
-		return "", errors.New("password file descriptor must be non-negative")
+	if fd < 3 {
+		return "", errors.New("password file descriptor must be an inherited pipe other than stdin, stdout, or stderr")
 	}
 	duplicatedFD, err := syscall.Dup(fd)
 	if err != nil {
@@ -310,6 +431,7 @@ func readPasswordFromInheritedPipe(fd int) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read password pipe: %w", err)
 	}
+	defer zeroBytes(inputBytes)
 	if len(inputBytes) == 0 || len(inputBytes) > maxInstallerPasswordBytes+1 {
 		return "", fmt.Errorf("installer password must be one line of at most %d bytes", maxInstallerPasswordBytes)
 	}
@@ -321,6 +443,12 @@ func readPasswordFromInheritedPipe(fd int) (string, error) {
 		return "", errors.New("installer password must be a non-empty UTF-8 line")
 	}
 	return password, nil
+}
+
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 func setManagedTLSOwnership(paths ...string) error {

@@ -42,17 +42,125 @@ func TestParseSetupArgsAcceptsPasswordFDOnlyForInit(t *testing.T) {
 	if !options.passwordFDSet || options.passwordFD != 9 {
 		t.Fatalf("password FD options = %#v", options)
 	}
-	if _, err := parseSetupArgs([]string{"init", "--username", "admin", "--password-fd", "-1"}); err == nil || !strings.Contains(err.Error(), "non-negative") {
-		t.Fatalf("negative --password-fd error = %v, want non-negative rejection", err)
+	for _, fd := range []string{"-1", "0", "1", "2"} {
+		if _, err := parseSetupArgs([]string{"init", "--username", "admin", "--password-fd", fd}); err == nil || !strings.Contains(err.Error(), "stdin, stdout, or stderr") {
+			t.Fatalf("--password-fd %s error = %v, want stdin/stdout/stderr rejection", fd, err)
+		}
 	}
 
 	for _, args := range [][]string{
-		{"reset-password", "--username", "admin", "--password-fd", "9"},
+		{"reset-password", "--password-fd", "9"},
 		{"replace-certificate", "--cert", "/tmp/cert.pem", "--key", "/tmp/key.pem", "--password-fd", "9"},
 	} {
 		if _, err := parseSetupArgs(args); err == nil || !strings.Contains(err.Error(), "only supported with init") {
 			t.Fatalf("parseSetupArgs(%q) error = %v, want init-only rejection", args, err)
 		}
+	}
+}
+
+func TestSetupUsageDocumentsEveryCommandOption(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"reset-password", "--help"}} {
+		var output bytes.Buffer
+		if err := run(args, nil, &output); err != nil {
+			t.Fatalf("run(%q) error = %v", args, err)
+		}
+		usage := output.String()
+		for _, want := range []string{
+			"init", "reset-password", "replace-certificate", "reset-permissions",
+			"--username", "--store", "--config", "--password-fd", "--cert", "--key", "--check",
+			defaultStoreDir, defaultConfigPath, managedTLSDir,
+			"single existing administrator",
+		} {
+			if !strings.Contains(usage, want) {
+				t.Errorf("run(%q) usage is missing %q:\n%s", args, want, usage)
+			}
+		}
+	}
+}
+
+func TestResetPasswordResetsTheDefaultAdministratorAndReportsIt(t *testing.T) {
+	originalTTYReader := passwordFromTTY
+	t.Cleanup(func() { passwordFromTTY = originalTTYReader })
+	storeDir := filepath.Join(t.TempDir(), "store")
+	store := controlapi.NewFileAdminStore(storeDir)
+	if err := store.Set("admin", "old-password"); err != nil {
+		t.Fatal(err)
+	}
+
+	const replacement = "short"
+	passwordFromTTY = func(*os.File, io.Writer, string) (string, error) { return replacement, nil }
+	var output bytes.Buffer
+	if err := runResetPassword(setupOptions{command: "reset-password", storeDir: storeDir}, nil, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "admin") {
+		t.Errorf("reset output does not name the administrator: %q", output.String())
+	}
+	if strings.Contains(output.String(), replacement) {
+		t.Error("reset output exposed the new password")
+	}
+	if err := store.Authenticate("admin", replacement); err != nil {
+		t.Fatalf("reset password does not authenticate: %v", err)
+	}
+}
+
+func TestParseSetupArgsAcceptsResetPermissions(t *testing.T) {
+	options, err := parseSetupArgs([]string{"reset-permissions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.command != "reset-permissions" || options.checkOnly {
+		t.Fatalf("parsed options = %#v", options)
+	}
+	checked, err := parseSetupArgs([]string{"reset-permissions", "--check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checked.checkOnly {
+		t.Fatalf("--check options = %#v", checked)
+	}
+	if _, err := parseSetupArgs([]string{"reset-permissions", "--store", "/tmp"}); err == nil {
+		t.Fatal("reset-permissions accepted --store; its paths come from the layout")
+	}
+}
+
+// The read-only report is the one form an operator can run before escalating, so
+// it must not be blocked by the root check that guards every writing command.
+func TestResetPermissionsCheckDoesNotRequireRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root")
+	}
+	err := run([]string{"reset-permissions", "--check"}, nil, &bytes.Buffer{})
+	if err != nil && strings.Contains(err.Error(), "must run as root") {
+		t.Fatalf("reset-permissions --check was rejected for not being root: %v", err)
+	}
+	if err := run([]string{"reset-permissions"}, nil, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "must run as root") {
+		t.Fatalf("reset-permissions error = %v, want a root requirement", err)
+	}
+}
+
+func TestParseSetupArgsRejectsUsernameOnResetPassword(t *testing.T) {
+	for _, args := range [][]string{
+		{"reset-password", "--username", "admin"},
+		{"reset-password", "--username=admin"},
+	} {
+		if _, err := parseSetupArgs(args); err == nil || !strings.Contains(err.Error(), "no longer takes --username") {
+			t.Fatalf("parseSetupArgs(%q) error = %v, want a --username removal message", args, err)
+		}
+	}
+	if _, err := parseSetupArgs([]string{"reset-password"}); err != nil {
+		t.Fatalf("parseSetupArgs(reset-password) error = %v, want acceptance without --username", err)
+	}
+}
+
+func TestSetupUsageIsNotTreatedAsACommand(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"help"}} {
+		if _, err := parseSetupArgs(args); err == nil {
+			t.Fatalf("parseSetupArgs(%q) accepted a usage request as a command", args)
+		}
+	}
+	if _, err := parseSetupArgs(nil); err == nil || !strings.Contains(err.Error(), "--help") {
+		t.Fatalf("parseSetupArgs(nil) error = %v, want a --help hint", err)
 	}
 }
 
@@ -80,8 +188,16 @@ func TestReadPasswordFromInheritedPipe(t *testing.T) {
 
 func TestReadPasswordFromInheritedPipeRejectsUnsafeDescriptorsAndInput(t *testing.T) {
 	t.Run("negative descriptor", func(t *testing.T) {
-		if _, err := readPasswordFromInheritedPipe(-1); err == nil || !strings.Contains(err.Error(), "non-negative") {
-			t.Fatalf("error = %v, want non-negative descriptor rejection", err)
+		if _, err := readPasswordFromInheritedPipe(-1); err == nil || !strings.Contains(err.Error(), "stdin, stdout, or stderr") {
+			t.Fatalf("error = %v, want stdin/stdout/stderr rejection", err)
+		}
+	})
+
+	t.Run("stdin, stdout, and stderr descriptors", func(t *testing.T) {
+		for _, fd := range []int{0, 1, 2} {
+			if _, err := readPasswordFromInheritedPipe(fd); err == nil || !strings.Contains(err.Error(), "stdin, stdout, or stderr") {
+				t.Fatalf("fd %d error = %v, want stdin/stdout/stderr rejection", fd, err)
+			}
 		}
 	})
 
