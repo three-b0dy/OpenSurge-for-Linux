@@ -253,6 +253,36 @@ func TestPreflightAcceptsSameInterfaceInSameLANMode(t *testing.T) {
 	}
 }
 
+func TestPreflightRejectsSameLANWithoutTUN(t *testing.T) {
+	cfg := config.Default()
+	cfg.Gateway.Mode = config.GatewayModeSameLAN
+	cfg.Gateway.Interface = "en0"
+	cfg.Gateway.UpstreamInterface = "en0"
+	cfg.Gateway.LANIP = "192.168.1.20"
+	cfg.DHCP.Enabled = false
+	cfg.Transparent.Mode = config.TransparentModeOff
+	manager := Manager{
+		cfg:   cfg,
+		paths: runtime.NewPaths(cfg),
+		deps: gatewayDeps{
+			interfaceByName: func(name string) (*net.Interface, error) {
+				return &net.Interface{Name: strings.TrimSpace(name)}, nil
+			},
+			interfaces: func() ([]net.Interface, error) {
+				return []net.Interface{{Name: "en0"}}, nil
+			},
+			interfaceAddrs: func(iface *net.Interface) ([]net.Addr, error) {
+				return []net.Addr{&net.IPNet{IP: net.ParseIP(cfg.Gateway.LANIP), Mask: net.CIDRMask(24, 32)}}, nil
+			},
+		},
+	}
+
+	err := manager.preflight(context.Background(), &fakeDHCP{}, &fakeMihomo{}, &fakeNft{}, &fakeSysctl{}, manager.deps)
+	if err == nil || !strings.Contains(err.Error(), `gateway.mode same_lan requires transparent.mode: "tun"`) {
+		t.Fatalf("preflight() error = %v", err)
+	}
+}
+
 func TestPreflightAcceptsSameInterfaceInSameWiFiDHCPMode(t *testing.T) {
 	cfg := config.Default()
 	cfg.Gateway.Mode = config.GatewayModeSameWiFiDHCP

@@ -105,6 +105,17 @@ export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: 
     } finally { setSaving(false) }
   }
 
+  const removeDevice = (deviceID: string) => {
+    const target = policy.devices.find(device => device.id === deviceID)
+    if (!target || !window.confirm(`删除设备 ${displayDeviceName(target)} 吗？保存并重载后它将不再生效。`)) return
+    const next = copyPolicy(policy)
+    next.devices = next.devices.filter(device => device.id !== deviceID)
+    if (!next.devices.some(device => device.profile === target.profile)) next.profiles = next.profiles.filter(profile => profile.id !== target.profile)
+    setPolicy(next)
+    setSelectedDeviceID(current => current === deviceID ? next.devices[0]?.id ?? '' : current)
+    setMessage('设备已从本地草稿删除；保存并重载后才会停止匹配。')
+  }
+
   const reload = async () => {
     setReloading(true); setError(''); setMessage('')
     try {
@@ -206,7 +217,7 @@ export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: 
       <section className="section live-section device-outlet-section">
         <SectionTitle title="设备出口" subtitle="身份匹配时即时生效 · 离线设备可预设" />
         <div className="device-stack">
-            {deviceViews(policy.devices, data?.applied_devices ?? (data?.applied ? data.devices : []), new Set(data?.changed_devices ?? []), overview?.topology).map(view => <DeviceCard key={`${view.desired?.id ?? view.applied?.id}-${view.state}`} view={view} topology={overview?.topology} leases={data?.leases ?? []} observed={data?.observed_devices ?? []} desiredDevices={policy.devices} groups={groups} healthByName={proxyHealth.byName} healthTesting={proxyHealth.testing} onHealthTest={proxyHealth.test} selected={selectedDeviceID === (view.desired?.id ?? view.applied?.id)} onSelect={() => view.desired && setSelectedDeviceID(view.desired.id)} onUseObservedIPv4={(deviceID, name, fromIPv4, toIPv4) => setRebindRequest({ deviceID, name, fromIPv4, toIPv4 })} onEgressModeChange={mode => {
+            {deviceViews(policy.devices, data?.applied_devices ?? (data?.applied ? data.devices : []), new Set(data?.changed_devices ?? []), overview?.topology).map(view => <DeviceCard key={`${view.desired?.id ?? view.applied?.id}-${view.state}`} view={view} topology={overview?.topology} leases={data?.leases ?? []} observed={data?.observed_devices ?? []} desiredDevices={policy.devices} groups={groups} healthByName={proxyHealth.byName} healthTesting={proxyHealth.testing} onHealthTest={proxyHealth.test} selected={selectedDeviceID === (view.desired?.id ?? view.applied?.id)} onSelect={() => view.desired && setSelectedDeviceID(view.desired.id)} onDelete={removeDevice} onUseObservedIPv4={(deviceID, name, fromIPv4, toIPv4) => setRebindRequest({ deviceID, name, fromIPv4, toIPv4 })} onEgressModeChange={mode => {
               if (!view.desired) return
               const next = copyPolicy(policy)
               next.devices = next.devices.map(device => device.id === view.desired!.id ? { ...device, egress_mode: mode } : device)
@@ -275,7 +286,7 @@ function deviceViews(desired: PolicyDevice[], applied: CompiledDevice[], changed
   return views
 }
 
-function DeviceCard({ view, topology, leases, observed, desiredDevices, groups, healthByName, healthTesting, onHealthTest, selected, onSelect, onUseObservedIPv4, onEgressModeChange, onChanged }: { view: DeviceView; topology?: string; leases: Lease[]; observed: ObservedDevice[]; desiredDevices: PolicyDevice[]; groups: ProxyGroup[]; healthByName: Map<string, ProxyHealthEntry>; healthTesting: Set<string>; onHealthTest: (names: string[]) => Promise<void>; selected: boolean; onSelect: () => void; onUseObservedIPv4: (deviceID: string, name: string, fromIPv4: string, toIPv4: string) => void; onEgressModeChange: (mode: DeviceEgressMode) => void; onChanged: () => Promise<void> }) {
+function DeviceCard({ view, topology, leases, observed, desiredDevices, groups, healthByName, healthTesting, onHealthTest, selected, onSelect, onDelete, onUseObservedIPv4, onEgressModeChange, onChanged }: { view: DeviceView; topology?: string; leases: Lease[]; observed: ObservedDevice[]; desiredDevices: PolicyDevice[]; groups: ProxyGroup[]; healthByName: Map<string, ProxyHealthEntry>; healthTesting: Set<string>; onHealthTest: (names: string[]) => Promise<void>; selected: boolean; onSelect: () => void; onDelete: (deviceID: string) => void; onUseObservedIPv4: (deviceID: string, name: string, fromIPv4: string, toIPv4: string) => void; onEgressModeChange: (mode: DeviceEgressMode) => void; onChanged: () => Promise<void> }) {
   const [rulesOpen, setRulesOpen] = useState(false)
   const device = view.desired ?? view.applied!
   const applied = view.applied
@@ -290,7 +301,7 @@ function DeviceCard({ view, topology, leases, observed, desiredDevices, groups, 
   const rebindAlreadyDrafted = Boolean(observedIPv4 && view.desired?.ipv4 === observedIPv4)
   const identityBlocked = identity?.state === 'address_changed' || identity?.state === 'conflict'
   return <article className={`device-card ${selected ? 'selected' : ''}`}>
-    <div className="source-head"><button className="device-title" type="button" disabled={!view.desired} aria-pressed={selected} onClick={onSelect}><small>{device.profile}</small><strong>{view.desired ? displayDeviceName(view.desired) : device.id}</strong>{view.desired?.name && <code>{device.id}</code>}</button><span className={`pill ${view.state === 'applied' ? 'ok' : ''}`}>{deviceStateLabel(view.state)}</span></div>
+    <div className="source-head"><button className="device-title" type="button" disabled={!view.desired} aria-pressed={selected} onClick={onSelect}><small>{device.profile}</small><strong>{view.desired ? displayDeviceName(view.desired) : device.id}</strong>{view.desired?.name && <code>{device.id}</code>}</button><div className="device-head-actions"><span className={`pill ${view.state === 'applied' ? 'ok' : ''}`}>{deviceStateLabel(view.state)}</span>{view.desired && <button className="danger-link device-delete" type="button" aria-label={`删除设备 ${displayDeviceName(view.desired)}`} title="删除设备" onClick={() => onDelete(view.desired!.id)}>删除设备</button>}</div></div>
     <div className="device-identity"><code>{device.ipv4}</code><small>{device.mac || 'MAC 未填写'}</small></div>
     {view.state === 'paused' && <div className="notice warn"><strong>DHCP 模式下策略已暂停</strong><p>补充 MAC 后才会生成 DHCP 固定租约和这台设备的专属路由规则。</p></div>}
     {identity?.state === 'address_changed' ? <div className="identity-rebind"><span className="identity-state changed"><strong>设备已识别，但 IP 已变化</strong><small>原地址 {applied!.ipv4} → 当前地址 {identity.observedIPv4}</small></span>{view.desired && !rebindOwner && !rebindAlreadyDrafted && <button className="primary" type="button" onClick={() => onUseObservedIPv4(view.desired!.id, displayDeviceName(view.desired!), applied!.ipv4, identity.observedIPv4!)}>使用当前 IP 并应用</button>}{rebindAlreadyDrafted && <small className="identity-rebind-note">当前 IP 已写入草稿；保存并重载后生效。</small>}{rebindOwner && <small className="identity-rebind-note conflict">当前地址已登记给 {displayDeviceName(rebindOwner)}，请先解决身份冲突。</small>}</div> : identity && <span className={`identity-state ${identity.tone}`}>{identity.text}</span>}

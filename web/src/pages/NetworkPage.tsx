@@ -18,6 +18,11 @@ type PolicyMigration = {
   unresolved: PolicyMigrationDevice[]
 }
 
+function normalizeGatewayTransparentMode(value: ControlConfig): ControlConfig {
+  if ((value.gateway.mode !== 'same_lan' && value.gateway.mode !== 'same_wifi_dhcp') || value.transparent.mode === 'tun') return value
+  return { ...value, transparent: { ...value.transparent, mode: 'tun' } }
+}
+
 export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Overview | null; onChanged: () => Promise<void>; onNavigate: (page: 'devices') => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -65,7 +70,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
 
   useEffect(() => {
     let active = true
-    void api.config().then(value => { if (active) { setConfig(value); setSavedConfig(value); setExpandedMode(value.gateway.mode); setDetailMode(value.gateway.mode) }; return active ? loadPlan(value) : undefined }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)) })
+    void api.config().then(value => { if (active) { const normalized = normalizeGatewayTransparentMode(value); setConfig(normalized); setSavedConfig(value); setExpandedMode(value.gateway.mode); setDetailMode(value.gateway.mode) }; return active ? loadPlan(value) : undefined }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)) })
     void api.networkInterfaces().then(value => { if (active) setInterfaceOptions(value.interfaces) }).catch(() => { if (active) setInterfaceDiscoveryError(true) })
     return () => { active = false }
   }, [loadPlan])
@@ -91,7 +96,7 @@ export function NetworkPage({ overview, onChanged, onNavigate }: { overview: Ove
   const selectMode = (mode: ControlConfig['gateway']['mode']) => setConfig(currentConfig => {
     if (!currentConfig) return currentConfig
     const sameLAN = mode === 'same_lan' || mode === 'same_wifi_dhcp'
-    return { ...currentConfig, gateway: { ...currentConfig.gateway, mode }, dhcp: { ...currentConfig.dhcp, enabled: mode !== 'same_lan' }, transparent: { ...currentConfig.transparent, mode: sameLAN ? 'tun' : currentConfig.transparent.mode } }
+    return normalizeGatewayTransparentMode({ ...currentConfig, gateway: { ...currentConfig.gateway, mode }, dhcp: { ...currentConfig.dhcp, enabled: mode !== 'same_lan' }, transparent: { ...currentConfig.transparent, mode: sameLAN ? 'tun' : currentConfig.transparent.mode } })
   })
 
   const toggleMode = (mode: NetworkMode) => {

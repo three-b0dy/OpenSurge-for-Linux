@@ -441,6 +441,9 @@ func (m Manager) Stop(ctx context.Context) error {
 }
 
 func (m Manager) preflight(ctx context.Context, dhcpManager dhcpService, mihomoManager mihomoService, nftManager nftService, sysctlManager sysctlService, deps gatewayDeps) error {
+	if m.cfg.Gateway.SameLAN() && m.cfg.Transparent.Mode != config.TransparentModeTUN {
+		return fmt.Errorf("gateway.mode %s requires transparent.mode: \"tun\"", m.cfg.Gateway.Mode)
+	}
 	if err := dhcpManager.Check(); err != nil {
 		return err
 	}

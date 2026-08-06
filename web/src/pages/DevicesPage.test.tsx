@@ -101,6 +101,26 @@ describe('DevicesPage', () => {
     expect(saveBar.classList.contains('has-changes')).toBe(true)
   })
 
+  it('removes a registered device from the desired policy before saving', async () => {
+    const policy: PolicySet = {
+      ...basePolicy,
+      devices: [{ id: 'alice', name: 'Alice', mac: 'aa:bb:cc:dd:ee:01', ipv4: '192.168.1.121', profile: 'alice-policy', egress_mode: 'inherit_global' }],
+      profiles: [{ id: 'alice-policy', default_policies: ['DIRECT'], rules: [] }],
+    }
+    vi.mocked(api.devicePolicy).mockResolvedValue(documentFor(policy))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPage()
+
+    const card = (await screen.findByText('Alice')).closest('.device-card') as HTMLElement
+    await userEvent.click(within(card).getByRole('button', { name: '删除设备 Alice' }))
+    await userEvent.click(screen.getByRole('button', { name: '保存设备配置' }))
+
+    await waitFor(() => expect(api.saveDevicePolicy).toHaveBeenCalled())
+    const saved = vi.mocked(api.saveDevicePolicy).mock.calls[0][0]
+    expect(saved.devices).toEqual([])
+    expect(saved.profiles).toEqual([])
+  })
+
   it('merges desired and applied devices into four states and separates identity readiness', async () => {
     const policy: PolicySet = {
       ...basePolicy,
