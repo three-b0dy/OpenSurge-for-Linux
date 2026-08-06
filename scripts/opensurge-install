@@ -1641,7 +1641,10 @@ main() {
 	fi
 	restore_temporary_policy
 	create_installer_marker
-	OPENSURGE_INSTALLER_MARKER="$installer_marker_path" run_package_manager dpkg -i "$package_path" || \
+	# Preserve a user-edited config.yaml on upgrades without allowing dpkg to
+	# block the installer on an interactive conffile prompt.
+	OPENSURGE_INSTALLER_MARKER="$installer_marker_path" run_package_manager \
+		dpkg --force-confdef --force-confold -i "$package_path" || \
 		die 'cannot install the OpenSurge package (command failed or timed out)'
 	restore_installer_marker
 	if test "$host_state_transaction_started" -eq 1; then

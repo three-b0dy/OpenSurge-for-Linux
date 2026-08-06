@@ -196,7 +196,7 @@ printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
 if test "$#" -eq 1 && test "$1" = --print-architecture; then
 	printf '%s\n' "${OPENSURGE_INSTALLER_TEST_DPKG_ARCH:-amd64}"
 fi
-if test "$#" -eq 2 && test "$1" = -i; then
+if test "$#" -eq 4 && test "$1" = --force-confdef && test "$2" = --force-confold && test "$3" = -i; then
 	marker=${OPENSURGE_INSTALLER_MARKER:-}
 	test -n "$marker" || exit 45
 	case "$marker" in
@@ -601,7 +601,7 @@ expect_fail() {
 	fi
 
 	assert_not_contains "$captured_commands" 'apt-get install'
-	assert_not_contains "$captured_commands" 'dpkg -i'
+	assert_not_contains "$captured_commands" 'dpkg --force-confdef --force-confold -i'
 	assert_command_not_invoked "$captured_commands" systemctl
 	assert_command_not_invoked "$captured_commands" ip
 	assert_command_not_invoked "$captured_commands" ss
@@ -621,7 +621,7 @@ expect_success() {
 	}
 	assert_contains "$captured_commands" 'timeout --foreground 600 apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
-	assert_contains "$captured_commands" 'dpkg -i'
+	assert_contains "$captured_commands" 'dpkg --force-confdef --force-confold -i'
 	assert_not_contains "$captured_stdout" "$test_secret"
 	assert_not_contains "$captured_stderr" "$test_secret"
 	assert_not_contains "$installer_log" "$test_secret"
@@ -740,7 +740,7 @@ expect_topology_failure() {
 	if run_installer "$@"; then
 		fail "installer accepted invalid topology: $*"
 	fi
-	assert_not_contains "$captured_commands" 'dpkg -i'
+	assert_not_contains "$captured_commands" 'dpkg --force-confdef --force-confold -i'
 	assert_file_missing "$config_path"
 }
 
@@ -933,7 +933,7 @@ expect_temporary_policy_is_removed_after_dependency_failure() {
 	fi
 	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_file_missing "$fake_bin/policy-rc.d"
-	assert_not_contains "$captured_commands" 'dpkg -i'
+	assert_not_contains "$captured_commands" 'dpkg --force-confdef --force-confold -i'
 }
 
 expect_orphaned_installer_policy_is_reclaimed() {
@@ -964,6 +964,7 @@ expect_upgrade_skips_port_53_rejection() {
 	OPENSURGE_TEST_PORT53_TCP='tcp LISTEN 0 4096 0.0.0.0:53 0.0.0.0:* users:(("opensurge-gateway",pid=77,fd=3))' \
 		run_installer --version v1.2.3 || fail 'upgrade rejected its existing port 53 listener'
 	assert_command_not_invoked "$captured_commands" ss
+	assert_contains "$captured_commands" 'dpkg --force-confdef --force-confold -i'
 }
 
 expect_failure_rolls_back_owned_dns_state() {
@@ -1067,7 +1068,7 @@ expect_fail_when_dpkg_deb_arch_is_wrong() {
 	fi
 	assert_contains "$captured_stderr" 'Debian package architecture does not match host architecture'
 	assert_not_contains "$captured_commands" 'apt-get install'
-	assert_not_contains "$captured_commands" 'dpkg -i'
+	assert_not_contains "$captured_commands" 'dpkg --force-confdef --force-confold -i'
 }
 
 expect_fail_when_offline_checksum_is_missing() {
@@ -1167,9 +1168,9 @@ expect_offline_final_symlink_uses_target_and_adjacent_checksum() {
 	expect_success --deb "$linked_deb"
 	assert_contains "$captured_commands" "cp -p -- $canonical_target_deb"
 	assert_not_contains "$captured_commands" "dpkg-deb -f $linked_deb Architecture"
-	assert_not_contains "$captured_commands" "dpkg -i $linked_deb"
+	assert_not_contains "$captured_commands" "dpkg --force-confdef --force-confold -i $linked_deb"
 	assert_not_contains "$captured_commands" "dpkg-deb -f $canonical_target_deb Architecture"
-	assert_not_contains "$captured_commands" "dpkg -i $canonical_target_deb"
+	assert_not_contains "$captured_commands" "dpkg --force-confdef --force-confold -i $canonical_target_deb"
 }
 
 mkdir -p "$fake_bin"
