@@ -108,11 +108,17 @@ describe('DevicesPage', () => {
       profiles: [{ id: 'alice-policy', default_policies: ['DIRECT'], rules: [] }],
     }
     vi.mocked(api.devicePolicy).mockResolvedValue(documentFor(policy))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderPage()
 
     const card = (await screen.findByText('Alice')).closest('.device-card') as HTMLElement
     await userEvent.click(within(card).getByRole('button', { name: '删除设备 Alice' }))
+    const dialog = screen.getByRole('dialog', { name: '删除 Alice？' })
+    expect(dialog.textContent).toContain('保存并重载后它将不再生效')
+    await userEvent.click(within(dialog).getByRole('button', { name: '取消' }))
+    expect(within(card).getByRole('button', { name: '删除设备 Alice' })).toBeTruthy()
+
+    await userEvent.click(within(card).getByRole('button', { name: '删除设备 Alice' }))
+    await userEvent.click(within(screen.getByRole('dialog', { name: '删除 Alice？' })).getByRole('button', { name: '确认删除' }))
     await userEvent.click(screen.getByRole('button', { name: '保存设备配置' }))
 
     await waitFor(() => expect(api.saveDevicePolicy).toHaveBeenCalled())

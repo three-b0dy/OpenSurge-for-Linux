@@ -17,6 +17,7 @@ type DevicesPageProps = {
 }
 
 type DeviceRebindRequest = { deviceID: string; name: string; fromIPv4: string; toIPv4: string }
+type DeviceDeletionRequest = { deviceID: string; name: string }
 
 export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: DevicesPageProps) {
   const proxyHealth = useProxyHealth()
@@ -34,6 +35,7 @@ export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: 
   const [revisionConflict, setRevisionConflict] = useState(false)
   const [rebindRequest, setRebindRequest] = useState<DeviceRebindRequest | null>(null)
   const [rebinding, setRebinding] = useState(false)
+  const [deviceDeletion, setDeviceDeletion] = useState<DeviceDeletionRequest | null>(null)
   const dirty = Boolean(document && JSON.stringify(policy) !== JSON.stringify(normalizePolicy(document.policy)))
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
@@ -105,14 +107,25 @@ export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: 
     } finally { setSaving(false) }
   }
 
-  const removeDevice = (deviceID: string) => {
+  const requestDeviceDeletion = (deviceID: string) => {
     const target = policy.devices.find(device => device.id === deviceID)
-    if (!target || !window.confirm(`删除设备 ${displayDeviceName(target)} 吗？保存并重载后它将不再生效。`)) return
+    if (!target) return
+    setDeviceDeletion({ deviceID, name: displayDeviceName(target) })
+  }
+
+  const removeDevice = () => {
+    if (!deviceDeletion) return
+    const target = policy.devices.find(device => device.id === deviceDeletion.deviceID)
+    if (!target) {
+      setDeviceDeletion(null)
+      return
+    }
     const next = copyPolicy(policy)
-    next.devices = next.devices.filter(device => device.id !== deviceID)
+    next.devices = next.devices.filter(device => device.id !== deviceDeletion.deviceID)
     if (!next.devices.some(device => device.profile === target.profile)) next.profiles = next.profiles.filter(profile => profile.id !== target.profile)
     setPolicy(next)
-    setSelectedDeviceID(current => current === deviceID ? next.devices[0]?.id ?? '' : current)
+    setSelectedDeviceID(current => current === deviceDeletion.deviceID ? next.devices[0]?.id ?? '' : current)
+    setDeviceDeletion(null)
     setMessage('设备已从本地草稿删除；保存并重载后才会停止匹配。')
   }
 
@@ -217,7 +230,7 @@ export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: 
       <section className="section live-section device-outlet-section">
         <SectionTitle title="设备出口" subtitle="身份匹配时即时生效 · 离线设备可预设" />
         <div className="device-stack">
-            {deviceViews(policy.devices, data?.applied_devices ?? (data?.applied ? data.devices : []), new Set(data?.changed_devices ?? []), overview?.topology).map(view => <DeviceCard key={`${view.desired?.id ?? view.applied?.id}-${view.state}`} view={view} topology={overview?.topology} leases={data?.leases ?? []} observed={data?.observed_devices ?? []} desiredDevices={policy.devices} groups={groups} healthByName={proxyHealth.byName} healthTesting={proxyHealth.testing} onHealthTest={proxyHealth.test} selected={selectedDeviceID === (view.desired?.id ?? view.applied?.id)} onSelect={() => view.desired && setSelectedDeviceID(view.desired.id)} onDelete={removeDevice} onUseObservedIPv4={(deviceID, name, fromIPv4, toIPv4) => setRebindRequest({ deviceID, name, fromIPv4, toIPv4 })} onEgressModeChange={mode => {
+            {deviceViews(policy.devices, data?.applied_devices ?? (data?.applied ? data.devices : []), new Set(data?.changed_devices ?? []), overview?.topology).map(view => <DeviceCard key={`${view.desired?.id ?? view.applied?.id}-${view.state}`} view={view} topology={overview?.topology} leases={data?.leases ?? []} observed={data?.observed_devices ?? []} desiredDevices={policy.devices} groups={groups} healthByName={proxyHealth.byName} healthTesting={proxyHealth.testing} onHealthTest={proxyHealth.test} selected={selectedDeviceID === (view.desired?.id ?? view.applied?.id)} onSelect={() => view.desired && setSelectedDeviceID(view.desired.id)} onDelete={requestDeviceDeletion} onUseObservedIPv4={(deviceID, name, fromIPv4, toIPv4) => setRebindRequest({ deviceID, name, fromIPv4, toIPv4 })} onEgressModeChange={mode => {
               if (!view.desired) return
               const next = copyPolicy(policy)
               next.devices = next.devices.map(device => device.id === view.desired!.id ? { ...device, egress_mode: mode } : device)
@@ -237,6 +250,7 @@ export function DevicesPage({ overview, onChanged, onNavigate, onDirtyChange }: 
 
     {reloadOpen && <ReloadDialog busy={reloading} onCancel={() => setReloadOpen(false)} onConfirm={() => void reload()} />}
     {rebindRequest && <RebindDialog request={rebindRequest} busy={rebinding} running={overview?.status.gateway === 'running'} includesDraft={dirty} onCancel={() => setRebindRequest(null)} onConfirm={() => void applyObservedIPv4()} />}
+    {deviceDeletion && <DeleteDeviceDialog request={deviceDeletion} onCancel={() => setDeviceDeletion(null)} onConfirm={removeDevice} />}
   </>
 }
 
@@ -267,6 +281,20 @@ function RebindDialog({ request, busy, running, includesDraft, onCancel, onConfi
     {includesDraft && <div className="notice warn" role="status">当前页面还有未保存修改；确认后会与本次 IP 更新一起验证、保存{running ? '并应用' : ''}。</div>}
     <ul><li>不会删除或重新登记设备。</li>{running ? <li>保存成功后会安全重载网关，现有连接会短暂中断。</li> : <li>网关当前未运行，配置会在下次启动时应用。</li>}</ul>
     <div className="dialog-actions"><button type="button" disabled={busy} onClick={onCancel}>取消</button><button className="primary" type="button" autoFocus disabled={busy} onClick={onConfirm}>{busy ? (running ? '正在更新并重载…' : '正在更新…') : (running ? '更新并重载网关' : '更新设备 IP')}</button></div>
+  </dialog>
+}
+
+function DeleteDeviceDialog({ request, onCancel, onConfirm }: { request: DeviceDeletionRequest; onCancel: () => void; onConfirm: () => void }) {
+  const titleID = `delete-${request.deviceID}-title`
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onCancel])
+  return <dialog className="reload-dialog" open aria-modal="true" aria-labelledby={titleID}>
+    <h2 id={titleID}>删除 {request.name}？</h2>
+    <p>这会从本地草稿删除该设备及其未被其他设备使用的 Profile。保存并重载后它将不再生效。</p>
+    <div className="dialog-actions"><button type="button" onClick={onCancel}>取消</button><button className="danger" type="button" autoFocus onClick={onConfirm}>确认删除</button></div>
   </dialog>
 }
 

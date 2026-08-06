@@ -391,7 +391,7 @@ button{cursor:pointer}
 .sticky-save.has-changes{position:sticky;z-index:5;bottom:18px}
 .sticky-save strong,.sticky-save small{display:block}.sticky-save small{margin-top:4px;color:#7b9188}
 .reload-dialog{position:fixed;z-index:20;inset:50% auto auto 50%;transform:translate(-50%,-50%);width:min(520px,calc(100vw - 48px));margin:0;border:1px solid #486a5c;border-radius:16px;background:#0d1b17;color:#eaf2ee;padding:24px;box-shadow:0 0 0 100vmax #020807c9,0 25px 80px #000}
-.reload-dialog h2{margin:0 0 12px}.reload-dialog p,.reload-dialog li{color:#a3b5ae;line-height:1.6}.reload-dialog ul{padding-left:21px}.dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}.dialog-actions button{border:1px solid #2b433b;border-radius:9px;background:#172b25;color:#d6e3de;padding:9px 13px}.dialog-actions .primary{border:0;background:#9af0c7;color:#092019}
+.reload-dialog h2{margin:0 0 12px}.reload-dialog p,.reload-dialog li{color:#a3b5ae;line-height:1.6}.reload-dialog ul{padding-left:21px}.dialog-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:20px}.dialog-actions button{border:1px solid #2b433b;border-radius:9px;background:#172b25;color:#d6e3de;padding:9px 13px}.dialog-actions .primary{border:0;background:#9af0c7;color:#092019}.dialog-actions .danger{border:0;background:#ffb6aa;color:#35100a}
 @media(max-width:1150px){.workspace{padding:32px}
 .service-grid{grid-template-columns:repeat(2,1fr)}
 .config-form{grid-template-columns:repeat(2,minmax(0,1fr))}
