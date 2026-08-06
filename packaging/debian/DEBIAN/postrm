@@ -219,6 +219,10 @@ restore_service() {
 	service=$1
 	was_enabled=$2
 	was_active=$3
+	command -v systemctl >/dev/null 2>&1 || return 1
+	# A combined APT removal can delete a generic service before this package's
+	# postrm runs. There is no unit state left to restore in that case.
+	systemctl cat "$service" >/dev/null 2>&1 || return 0
 	if test "$was_enabled" -eq 1; then
 		systemctl enable "$service" || return 1
 	else

@@ -15,7 +15,7 @@ require_disposable_root() {
 	fi
 	[[ $(uname -s) == Linux ]] || fail 'package lifecycle test requires a disposable Linux root'
 	[[ ${EUID:-$(id -u)} -eq 0 ]] || fail 'package lifecycle test requires root after explicit opt-in'
-	if dpkg-query -W -f='${db:Status-Status}' opensurge 2>/dev/null | grep -F 'installed' >/dev/null; then
+	if [[ $(dpkg-query -W -f='${db:Status-Status}' opensurge 2>/dev/null || true) == installed ]]; then
 		fail 'refusing to replace an existing OpenSurge installation'
 	fi
 	for path in /etc/opensurge /var/lib/opensurge /usr/bin/opensurge /usr/lib/opensurge; do
@@ -72,6 +72,16 @@ set_service_state() {
 	local service=$1
 	local state=$2
 	printf '%s\n' "$state" >"$service_state_dir/$service"
+}
+
+mark_service_unit_absent() {
+	local service=$1
+	touch "$service_state_dir/$service.absent"
+}
+
+mark_service_unit_present() {
+	local service=$1
+	rm -f -- "$service_state_dir/$service.absent"
 }
 
 snapshot_resolver() {
@@ -236,8 +246,15 @@ write_state() {
 	printf '%s\n' "$2" >"$(state_path "$1")"
 }
 
+service_unit_is_absent() {
+	test -e "$(state_path "$1").absent"
+}
+
 last_argument=${!#-}
 case "${1:-}" in
+	cat)
+		! service_unit_is_absent "$last_argument"
+		;;
 	is-enabled)
 		state=$(read_state "$last_argument")
 		test "${state%-*}" = enabled
@@ -255,6 +272,10 @@ case "${1:-}" in
 		for service in "$@"; do
 			case "$service" in
 				*.service|*.socket)
+					if service_unit_is_absent "$service"; then
+						printf 'Unit %s not found.\n' "$service" >&2
+						exit 5
+					fi
 					state=$(read_state "$service")
 					case "$action" in
 						disable)
@@ -375,7 +396,7 @@ assert_controlled_install() {
 	[[ -x /usr/lib/opensurge/mihomo ]] || fail 'controlled installer did not install mihomo'
 	[[ -f /usr/lib/systemd/system/opensurge-gateway.socket ]] || fail 'controlled installer did not install gateway socket'
 	[[ -f /var/lib/opensurge/admin.json && ! -L /var/lib/opensurge/admin.json ]] || fail 'installer did not initialize an administrator'
-	assert_file_mode /var/lib/opensurge/admin.json 600
+	assert_file_mode /var/lib/opensurge/admin.json 640
 	assert_file_mode /var/lib/opensurge/install-state/manifest 600
 	assert_service_state dnsmasq.service disabled-inactive
 	assert_service_state opensurge-gateway.socket enabled-active
@@ -383,7 +404,7 @@ assert_controlled_install() {
 	[[ -f "$apt_suppressed" ]] || fail 'dependency installation did not prove policy-rc.d suppression'
 	assert_not_contains "$command_log" 'systemctl start dnsmasq.service'
 	assert_contains "$command_log" 'systemctl enable --now opensurge-gateway.socket opensurge-control.service'
-	assert_contains "$command_log" 'curl --fail --silent --show-error --insecure https://192.0.2.10:61767/api/v1/auth/status'
+	assert_contains "$command_log" 'curl --fail --silent --show-error --insecure --connect-timeout 5 --max-time 10 https://192.0.2.10:61767/api/v1/auth/status'
 	if [[ -d /run/opensurge/installer ]] && find /run/opensurge/installer -mindepth 1 -print -quit | grep -q .; then
 		fail 'installer marker survived package-manager completion'
 	fi
@@ -476,6 +497,42 @@ test_purge_restores_only_owned_state_and_credentials() {
 	[[ ! -e /var/lib/opensurge ]] || fail 'purge retained OpenSurge state or credentials'
 	[[ ! -e /etc/opensurge/tls/key.pem ]] || fail 'purge retained TLS private key'
 	PATH="$fixture_bin:$PATH" "$extracted_postrm" purge
+}
+
+test_postrm_skips_removed_dnsmasq_unit() {
+	rm -rf /var/lib/opensurge
+	mkdir -p /var/lib/opensurge/install-state
+	chmod 0700 /var/lib/opensurge/install-state
+	cat >/var/lib/opensurge/install-state/manifest <<'EOF'
+state_version=1
+installer_version=1
+transaction_id=removed-dnsmasq-unit
+install_phase=complete
+resolver_was_altered=0
+resolved_was_altered=0
+resolved_was_enabled=0
+resolved_was_active=0
+dnsmasq_was_altered=1
+dnsmasq_was_enabled=1
+dnsmasq_was_active=0
+resolv_conf_backup_exists=0
+resolv_conf_kind=absent
+selected_resolver=none
+resolver_selection=none
+EOF
+	chmod 0600 /var/lib/opensurge/install-state/manifest
+	set_service_state dnsmasq.service disabled-inactive
+	mark_service_unit_absent dnsmasq.service
+	: >"$command_log"
+	PATH="$fixture_bin:$PATH" "$extracted_postrm" remove
+	assert_not_contains "$command_log" 'systemctl enable dnsmasq.service'
+	assert_not_contains "$command_log" 'systemctl disable dnsmasq.service'
+	assert_not_contains "$command_log" 'systemctl start dnsmasq.service'
+	assert_not_contains "$command_log" 'systemctl stop dnsmasq.service'
+	[[ ! -e /var/lib/opensurge/install-state/manifest ]] || fail 'postrm retained ownership manifest after dnsmasq removal'
+	mark_service_unit_present dnsmasq.service
+	rm -rf /var/lib/opensurge
+	: >"$command_log"
 }
 
 test_invalid_manifest_is_retained() {
@@ -627,6 +684,7 @@ cp "$package" "$fixture_package"
 (cd "$test_root" && sha256sum "$(basename "$fixture_package")" >SHA256SUMS)
 
 prepare_resolver_symlink $'nameserver 9.9.9.9\n'
+test_postrm_skips_removed_dnsmasq_unit
 test_preinst_rejects_invalid_markers
 expect_direct_dpkg_install_failure
 test_remove_restores_only_owned_state

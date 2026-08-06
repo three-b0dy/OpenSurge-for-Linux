@@ -80,6 +80,8 @@ missing state file makes repeated restoration a no-op; an invalid manifest is
 not trusted and is retained for manual recovery.
 
 Package remove and purge handling use the same restore rule: only state that
-the manifest proves OpenSurge changed is restored. The installer does not
-recreate a service that was originally disabled or inactive, and it does not
-alter a pre-existing package policy.
+the manifest proves OpenSurge changed is restored. If a combined package
+removal has already deleted a recorded generic service unit, there is no
+service state left to restore and the package cleanup treats that case as
+successful. The installer does not recreate a service that was originally
+disabled or inactive, and it does not alter a pre-existing package policy.

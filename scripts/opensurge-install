@@ -887,6 +887,7 @@ create_installer_marker() {
 
 	test ! -L "$opensurge_run_dir" || die 'OpenSurge runtime directory must not be a symbolic link'
 	mkdir -p "$opensurge_run_dir" || die 'cannot create OpenSurge runtime directory'
+	chmod 0755 "$opensurge_run_dir" || die 'cannot prepare OpenSurge runtime directory'
 	installer_marker_dir="$opensurge_run_dir/installer"
 	test ! -L "$installer_marker_dir" || die 'installer marker directory must not be a symbolic link'
 	mkdir -p "$installer_marker_dir" || die 'cannot create installer marker directory'

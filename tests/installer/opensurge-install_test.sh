@@ -627,6 +627,7 @@ expect_success() {
 	assert_not_contains "$installer_log" "$test_secret"
 	test -s "$observed_installer_marker" || fail 'dpkg did not receive an installer marker'
 	assert_file_missing "$(<"$observed_installer_marker")"
+	assert_file_mode "$test_root/root/run/opensurge" 755
 	assert_file_equals "$test_root/root/var/lib/opensurge/admin.json" $'{"username":"admin","hash":"fixture"}\n'
 	assert_contains "$captured_commands" "chown root:opensurge $test_root/root/var/lib/opensurge/admin.json"
 	assert_fake_service_state opensurge-gateway.socket enabled-active
