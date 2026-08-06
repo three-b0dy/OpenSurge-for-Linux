@@ -39,13 +39,10 @@ grep -F 'cp scripts/opensurge-install release-assets/opensurge-install' "$releas
 grep -F 'chmod 0755 release-assets/opensurge-install' "$release" >/dev/null
 grep -F 'sha256sum opensurge-install opensurge_*.deb | LC_ALL=C sort -k2,2 > SHA256SUMS' "$release" >/dev/null
 grep -F 'release-assets/opensurge-install release-assets/opensurge_*.deb release-assets/SHA256SUMS' "$release" >/dev/null
-grep -F 'apt-get install -y --no-install-recommends debootstrap' "$release" >/dev/null
-grep -F 'debootstrap --variant=minbase --include=adduser noble "$test_root" "$mirror"' "$release" >/dev/null
-grep -F 'chroot "$test_root" /usr/bin/env OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1' "$release" >/dev/null
-grep -F '/workspace/tests/packages/install-deb.sh' "$release" >/dev/null
-release_apt_install_lines=$(grep -E '^[[:space:]]*apt-get install ' "$release" || true)
-if test "$release_apt_install_lines" != '              apt-get install -y --no-install-recommends debootstrap'; then
-	echo "release package test must install only the debootstrap prerequisite in the outer container" >&2
+if rg -n \
+	'Test package in matching architecture container|docker/setup-qemu-action|debootstrap|install-deb\.sh|OPENSURGE_PACKAGE_TEST_ALLOW_HOST|docker run --rm --platform' \
+	"$release"; then
+	echo "release workflow must build packages without a CI package lifecycle test" >&2
 	exit 1
 fi
 test ! -e "$repo_root/.github/workflows/release-unsigned.yml"
