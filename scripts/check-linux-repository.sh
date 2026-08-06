@@ -41,8 +41,8 @@ grep -F 'sha256sum opensurge-install opensurge_*.deb | LC_ALL=C sort -k2,2 > SHA
 grep -F 'release-assets/opensurge-install release-assets/opensurge_*.deb release-assets/SHA256SUMS' "$release" >/dev/null
 grep -F 'apt-get install -y --no-install-recommends debootstrap' "$release" >/dev/null
 grep -F 'debootstrap --variant=minbase --include=adduser noble "$test_root" "$mirror"' "$release" >/dev/null
-grep -F 'chroot "$test_root" /bin/bash -euc' "$release" >/dev/null
-grep -F 'OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 /workspace/tests/packages/install-deb.sh' "$release" >/dev/null
+grep -F 'chroot "$test_root" /usr/bin/env OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1' "$release" >/dev/null
+grep -F '/workspace/tests/packages/install-deb.sh' "$release" >/dev/null
 release_apt_install_lines=$(grep -E '^[[:space:]]*apt-get install ' "$release" || true)
 if test "$release_apt_install_lines" != '              apt-get install -y --no-install-recommends debootstrap'; then
 	echo "release package test must install only the debootstrap prerequisite in the outer container" >&2

@@ -88,8 +88,9 @@ jobs:
               install -m 0755 tests/packages/install-deb.sh "$test_root/workspace/tests/packages/install-deb.sh"
               install -m 0755 scripts/opensurge-install "$test_root/workspace/scripts/opensurge-install"
               install -m 0644 "$PACKAGE" "$test_root/workspace/$(basename "$PACKAGE")"
-              chroot "$test_root" /bin/bash -euc \
-                "OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 /workspace/tests/packages/install-deb.sh \\\"/workspace/$(basename "$PACKAGE")\\\" --installer-fixture"
+              chroot "$test_root" /usr/bin/env OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 \
+                /workspace/tests/packages/install-deb.sh \
+                "/workspace/$(basename "$PACKAGE")" --installer-fixture
             '
 
       - name: Upload package
