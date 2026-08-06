@@ -167,7 +167,7 @@ printf '\n' >>"$OPENSURGE_PACKAGE_COMMAND_LOG"
 case "${1:-}:${2:-}:${3:-}" in
 	-4:route:get) printf '%s\n' '1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.10 uid 0' ;;
 	-4:route:show) printf '%s\n' 'default via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 100' ;;
-	link:show:dev) test "${5:-}" = eth0 ;;
+	link:show:dev) test "${4:-}" = eth0 ;;
 	*) exit 1 ;;
 esac
 EOF
