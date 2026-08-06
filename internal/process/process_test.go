@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,26 +35,35 @@ func TestSignalErrMeansAlive(t *testing.T) {
 }
 
 func TestStartDetachedReapsExitedChild(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "exit 0")
+	cmd := exec.Command("sh", "-c", "sleep 0.05")
 	pid, err := startDetached(cmd)
 	if err != nil {
 		t.Fatalf("startDetached() error = %v", err)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
+	lastState := ""
 	for time.Now().Before(deadline) {
-		var status syscall.WaitStatus
-		waited, waitErr := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
-		if errors.Is(waitErr, syscall.ECHILD) {
+		state, stateErr := childState(pid)
+		if errors.Is(stateErr, os.ErrNotExist) {
 			return
 		}
-		if waitErr != nil {
-			t.Fatalf("Wait4() error = %v", waitErr)
+		if stateErr != nil {
+			t.Fatalf("childState() error = %v", stateErr)
 		}
-		if waited == pid {
-			t.Fatalf("startDetached() left child %d unreaped", pid)
-		}
+		lastState = strings.TrimSpace(state)
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("child %d was not reaped before timeout", pid)
+	t.Fatalf("child %d was not reaped before timeout (state %q)", pid, lastState)
+}
+
+func childState(pid int) (string, error) {
+	output, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); ok {
+			return "", os.ErrNotExist
+		}
+		return "", err
+	}
+	return string(output), nil
 }
