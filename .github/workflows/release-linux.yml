@@ -74,8 +74,22 @@ jobs:
             bash -euc '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              apt-get install -y --no-install-recommends adduser
-              OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 tests/packages/install-deb.sh "$PACKAGE" --installer-fixture
+              apt-get install -y --no-install-recommends debootstrap
+              case "$(dpkg --print-architecture)" in
+                amd64) mirror=http://archive.ubuntu.com/ubuntu ;;
+                arm64) mirror=http://ports.ubuntu.com/ubuntu-ports ;;
+                *) echo "unsupported package-test architecture" >&2; exit 2 ;;
+              esac
+              test_root=$(mktemp -d)
+              trap "rm -rf -- \"$test_root\"" EXIT
+              # Docker injects /etc/resolv.conf as a mount; the fixture must own its resolver path.
+              debootstrap --variant=minbase --include=adduser noble "$test_root" "$mirror"
+              install -d "$test_root/workspace/tests/packages" "$test_root/workspace/scripts"
+              install -m 0755 tests/packages/install-deb.sh "$test_root/workspace/tests/packages/install-deb.sh"
+              install -m 0755 scripts/opensurge-install "$test_root/workspace/scripts/opensurge-install"
+              install -m 0644 "$PACKAGE" "$test_root/workspace/$(basename "$PACKAGE")"
+              chroot "$test_root" /bin/bash -euc \
+                "OPENSURGE_PACKAGE_TEST_ALLOW_HOST=1 /workspace/tests/packages/install-deb.sh \\\"/workspace/$(basename "$PACKAGE")\\\" --installer-fixture"
             '
 
       - name: Upload package
