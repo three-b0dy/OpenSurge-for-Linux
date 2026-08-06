@@ -1,6 +1,8 @@
 # OpenSurge for Linux
 
-OpenSurge 是一个面向 Linux 的 Surge 风格家庭网关控制面。当前仓库建立
+OpenSurge for Linux 是 [OpenSurge for Mac](https://github.com/YTwsy/OpenSurge-for-Mac)
+的 fork，目标是将 OpenSurge 的完整功能移植到 Linux，并按 Linux 的网络栈和服务
+边界重新实现。它是一个面向 Linux 的 Surge 风格家庭网关控制面。当前仓库建立
 配置契约、mihomo 配置渲染和完整的 Linux 网关生命周期：dnsmasq 提供
 DHCP/DNS，mihomo TUN 提供透明代理，nftables 提供 OpenSurge 专属的转发/NAT
 规则，systemd 负责已安装服务的边界。
@@ -64,6 +66,12 @@ go run ./cmd/opensurge doctor --config examples/config.example.yaml
 当前架构匹配的 `.deb`、用同一 Release 的 `SHA256SUMS` 验证它、自动安装所需依赖，
 再完成首次配置、管理员初始化和控制面启动。安装器必须能写入控制 TTY，才能只向该
 终端显示一次性管理员密码；不支持无人值守或没有可写控制终端的安装。
+
+也可以直接通过 `curl` 一键下载并执行最新版本的安装器：
+
+```sh
+curl -fsSL https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install | sudo bash
+```
 
 ```sh
 curl -fLO https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install
