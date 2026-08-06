@@ -1,9 +1,11 @@
 # OpenSurge for Linux
 
-OpenSurge is a Surge-style home-gateway control plane for Linux. This repository
-currently establishes the configuration contract, mihomo rendering, Linux
-network adapters, and an OpenSurge-owned nftables table. The complete gateway
-lifecycle and installed systemd units are planned for a later phase.
+OpenSurge for Linux is a fork of [OpenSurge for Mac](https://github.com/YTwsy/OpenSurge-for-Mac),
+with the goal of porting the complete OpenSurge feature set to Linux while
+adapting the implementation to Linux networking and service boundaries. It is a
+Surge-style home-gateway control plane for Linux. This repository establishes
+the configuration contract, mihomo rendering, Linux network adapters, and an
+OpenSurge-owned nftables table.
 
 ## Supported scope
 
@@ -45,6 +47,22 @@ The default configuration path is `/etc/opensurge/config.yaml`. The default
 runtime data directory is `/var/lib/opensurge`, with runtime sockets under
 `/run/opensurge`.
 
+## Installation
+
+The supported Debian/Ubuntu installation entry point is the GitHub Release
+installer. It downloads and verifies the architecture-matched package and then
+completes dependency installation, initial configuration, administrator setup,
+and service startup.
+
+Install the latest release with one `curl` command:
+
+```sh
+curl -fsSL https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install | sudo bash
+```
+
+The installer requires a controlling TTY so it can display the one-time
+administrator password.
+
 ## Development checks
 
 ```sh
@@ -53,11 +71,8 @@ make web-test
 make build
 ```
 
-The current phase provides a reusable Control API/Web GUI foundation and Linux
-network primitives. Debian packages, installed systemd gateway services, and
-production deployment units are not implemented yet and must not be presented
-as installable release artifacts. The planned Linux service foundation uses
-nftables, iproute2, and systemd; gateway lifecycle integration and Linux lab
-validation follow in later phases.
+The current phase provides a reusable Control API/Web GUI foundation, Linux
+network primitives, release packages, and installed systemd gateway services.
+The Linux service foundation uses nftables, iproute2, and systemd.
 
 See [docs/linux-migration.md](docs/linux-migration.md) for the migration guide.

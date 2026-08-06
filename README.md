@@ -73,6 +73,8 @@ go run ./cmd/opensurge doctor --config examples/config.example.yaml
 curl -fsSL https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install | sudo bash
 ```
 
+也可以分步下载并执行安装器：
+
 ```sh
 curl -fLO https://github.com/three-b0dy/OpenSurge-for-Linux/releases/latest/download/opensurge-install
 sudo bash ./opensurge-install
