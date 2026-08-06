@@ -19,6 +19,7 @@ func TestRenderConfig(t *testing.T) {
 
 	for _, want := range []string{
 		"mixed-port: 7890",
+		"log-level: warning",
 		"external-controller: 127.0.0.1:9090",
 		"profile:",
 		"  store-selected: true",
@@ -40,6 +41,18 @@ func TestRenderConfig(t *testing.T) {
 	}
 	if strings.Contains(rendered, "tun:") {
 		t.Fatalf("rendered config enables tun by default:\n%s", rendered)
+	}
+}
+
+func TestRenderConfigUsesConfiguredLogLevel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Mihomo.LogLevel = "info"
+	rendered, err := RenderConfig(cfg)
+	if err != nil {
+		t.Fatalf("RenderConfig() error = %v", err)
+	}
+	if !strings.Contains(rendered, "log-level: info") {
+		t.Fatalf("rendered config missing configured log level:\n%s", rendered)
 	}
 }
 

@@ -25,6 +25,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if cfg.Mihomo.MixedPort != 7890 {
 		t.Fatalf("Mihomo.MixedPort = %d", cfg.Mihomo.MixedPort)
 	}
+	if cfg.Mihomo.LogLevel != "warning" {
+		t.Fatalf("Mihomo.LogLevel = %q, want warning", cfg.Mihomo.LogLevel)
+	}
 	if cfg.Mihomo.RedirPort != 0 {
 		t.Fatalf("Mihomo.RedirPort = %d", cfg.Mihomo.RedirPort)
 	}
@@ -60,6 +63,26 @@ func TestLoadExampleConfig(t *testing.T) {
 	}
 	if cfg.UpstreamProxy.MatchDomain != "example.com" {
 		t.Fatalf("UpstreamProxy.MatchDomain = %q", cfg.UpstreamProxy.MatchDomain)
+	}
+}
+
+func TestLoadMihomoLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configBody := `
+mihomo:
+  log_level: "info"
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Mihomo.LogLevel != "info" {
+		t.Fatalf("Mihomo.LogLevel = %q, want info", cfg.Mihomo.LogLevel)
 	}
 }
 

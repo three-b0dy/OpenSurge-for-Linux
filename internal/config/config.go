@@ -63,6 +63,7 @@ type MihomoConfig struct {
 	Config      string
 	ProfileMode string
 	Profile     string
+	LogLevel    string
 	MixedPort   int
 	RedirPort   int
 	APIAddr     string
@@ -160,6 +161,7 @@ func Default() Config {
 			Config:      "./runtime/mihomo.yaml",
 			ProfileMode: MihomoProfileModeManaged,
 			Profile:     "",
+			LogLevel:    "warning",
 			MixedPort:   7890,
 			RedirPort:   0,
 			APIAddr:     "127.0.0.1:9090",

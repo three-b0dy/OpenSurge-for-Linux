@@ -46,6 +46,8 @@ mihomo:
   # OpenSurge-owned gateway fields such as LAN binding, DNS, TUN, and API.
   profile_mode: "managed"
   profile: ""
+  # Production default is warning; use info/debug only while diagnosing.
+  log_level: "warning"
   mixed_port: 7890
   # Linux transparent proxying uses transparent.mode: "tun"; redir must stay 0.
   redir_port: 0

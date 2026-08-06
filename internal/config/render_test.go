@@ -42,6 +42,15 @@ func TestRenderRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRenderIncludesMihomoLogLevel(t *testing.T) {
+	cfg := Default()
+	cfg.Mihomo.LogLevel = "info"
+	rendered := Render(cfg)
+	if !strings.Contains(rendered, "  log_level: \"info\"") {
+		t.Fatalf("rendered config missing mihomo log_level:\n%s", rendered)
+	}
+}
+
 func TestRenderOmitsRemovedPlatformFields(t *testing.T) {
 	rendered := Render(Default())
 	for _, removed := range []string{"pf:", strings.Join([]string{"local", "system", "proxy"}, "_") + ":", "anchor_name:", "redirect_tcp_to:"} {

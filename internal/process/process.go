@@ -33,9 +33,11 @@ func startDetached(cmd *exec.Cmd) (int, error) {
 		return 0, err
 	}
 	pid := cmd.Process.Pid
-	if err := cmd.Process.Release(); err != nil {
-		return 0, err
-	}
+	// The gateway owns these children. Reap them asynchronously so repeated
+	// reloads do not accumulate zombies while keeping the detached API.
+	go func() {
+		_ = cmd.Wait()
+	}()
 	return pid, nil
 }
 

@@ -20,6 +20,14 @@ func TestValidateRejectsMihomoRedirPort(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidMihomoLogLevel(t *testing.T) {
+	cfg := Default()
+	cfg.Mihomo.LogLevel = "verbose"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "mihomo.log_level") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidateAcceptsTUNTransparentMode(t *testing.T) {
 	cfg := Default()
 	cfg.Transparent.Mode = TransparentModeTUN

@@ -169,6 +169,8 @@ func applyValue(cfg *Config, section, key, value string) error {
 		cfg.Mihomo.ProfileMode = strings.ToLower(value)
 	case "mihomo.profile":
 		cfg.Mihomo.Profile = value
+	case "mihomo.log_level":
+		cfg.Mihomo.LogLevel = strings.ToLower(value)
 	case "mihomo.mixed_port":
 		port, err := strconv.Atoi(value)
 		if err != nil {

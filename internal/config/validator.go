@@ -77,6 +77,9 @@ func validate(cfg Config, checkDevicePolicy bool) error {
 	if strings.TrimSpace(cfg.Mihomo.Config) == "" {
 		return fmt.Errorf("mihomo.config is required")
 	}
+	if !validMihomoLogLevel(cfg.Mihomo.LogLevel) {
+		return fmt.Errorf("mihomo.log_level must be silent, error, warning, info, or debug")
+	}
 	if !validPort(cfg.Mihomo.MixedPort) {
 		return fmt.Errorf("mihomo.mixed_port must be between 1 and 65535")
 	}
@@ -273,6 +276,15 @@ func validateMihomoProfile(cfg Config) error {
 		return fmt.Errorf("mihomo.profile_mode must be managed or imported")
 	}
 	return nil
+}
+
+func validMihomoLogLevel(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "silent", "error", "warning", "info", "debug":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateTransparent(cfg TransparentConfig) error {

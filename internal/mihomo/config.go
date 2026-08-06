@@ -12,7 +12,7 @@ const configTemplate = `mixed-port: {{ .MixedPort }}
 allow-lan: true
 bind-address: "*"
 mode: rule
-log-level: info
+log-level: {{ .LogLevel }}
 {{ if .TUNEnabled }}
 interface-name: {{ .UpstreamInterface }}
 {{ end }}
