@@ -928,7 +928,7 @@ restore_installer_marker() {
 
 run_package_manager() {
 	if command -v timeout >/dev/null 2>&1; then
-		timeout "$PACKAGE_MANAGER_TIMEOUT_SECONDS" "$@"
+		timeout --foreground "$PACKAGE_MANAGER_TIMEOUT_SECONDS" "$@"
 	else
 		"$@"
 	fi

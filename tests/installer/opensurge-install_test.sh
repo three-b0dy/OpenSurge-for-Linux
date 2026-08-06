@@ -168,6 +168,25 @@ EOF
 	chmod 0755 "$fake_bin/apt-get"
 }
 
+make_fake_timeout() {
+	cat >"$fake_bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$(basename "$0")" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf ' %q' "$@" >>"$OPENSURGE_INSTALLER_COMMANDS"
+printf '\n' >>"$OPENSURGE_INSTALLER_COMMANDS"
+if test "${1:-}" = --foreground; then
+	shift
+fi
+duration=${1:-}
+case "$duration" in
+	''|*[!0-9]*) exit 64 ;;
+esac
+shift
+exec "$@"
+EOF
+	chmod 0755 "$fake_bin/timeout"
+}
+
 make_fake_dpkg() {
 	cat >"$fake_bin/dpkg" <<'EOF'
 #!/usr/bin/env bash
@@ -600,6 +619,7 @@ expect_success() {
 		cat "$captured_stderr" >&2
 		fail "installer rejected valid invocation: $*"
 	}
+	assert_contains "$captured_commands" 'timeout --foreground 600 apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_contains "$captured_commands" 'apt-get install --yes --no-install-recommends adduser ca-certificates curl dnsmasq nftables iproute2 systemd'
 	assert_contains "$captured_commands" 'dpkg -i'
 	assert_not_contains "$captured_stdout" "$test_secret"
@@ -932,7 +952,7 @@ expect_apt_index_is_refreshed_once_when_bootstrap_runs() {
 	begin_host_state_case
 	OPENSURGE_TEST_TRANSFER_PREREQUISITES=missing run_installer --version v1.2.3 || \
 		fail 'installer rejected bootstrap with missing transfer prerequisites'
-	update_count=$(grep -F -c -- 'apt-get update' "$captured_commands" || true)
+	update_count=$(grep -E -c '^apt-get update([[:space:]]|$)' "$captured_commands" || true)
 	test "$update_count" -eq 1 || fail "expected exactly one apt-get update invocation, got $update_count"
 }
 
@@ -1160,6 +1180,7 @@ for command_name in chown journalctl; do
 	make_fake_command "$command_name"
 done
 make_fake_apt_get
+make_fake_timeout
 make_fake_dpkg
 make_fake_dpkg_deb
 make_fake_ip
